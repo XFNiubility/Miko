@@ -49,6 +49,9 @@ describe('desktop release readiness', () => {
     )
     expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY')
     expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY_PASSWORD')
+    expect(workflow).toContain('Validate updater signing configuration')
+    expect(workflow).toContain('Cache Tauri bundler tools')
+    expect(workflow).toContain('Prepare Windows NSIS tools')
     expect(workflow).toContain('updaterJsonPreferNsis: true')
     expect(workflow).toContain('release-notes/v${{ steps.version.outputs.value }}.md')
   })
@@ -64,6 +67,9 @@ describe('desktop release readiness', () => {
     const tauriMain = readText('desktop/src-tauri/src/main.rs')
     const tauriLib = readText('desktop/src-tauri/src/lib.rs')
     const workflow = readText('.github/workflows/release-desktop.yml')
+    const releaseConfig = readJson<{ bundle?: { useLocalToolsDir?: boolean } }>(
+      'desktop/src-tauri/tauri.release-ci.json',
+    )
 
     expect(workflow).toContain("tauri_args: '--bundles nsis'")
     expect(workflow).toContain('updaterJsonPreferNsis: true')
@@ -75,6 +81,7 @@ describe('desktop release readiness', () => {
     expect(localWindowsBuildScript).toContain('Test-NsisAvailable')
     expect(localWindowsBuildScript).toContain('Ensure-BuildToolPaths')
     expect(localWindowsBuildScript).toContain('useLocalToolsDir')
+    expect(releaseConfig.bundle?.useLocalToolsDir).toBe(true)
     expect(tauriMain).toContain('create_env_dir_if_set("KIMO_WORKSPACE_ROOT")')
     expect(tauriMain).toContain('fn default_workspace_root()')
     expect(tauriMain).toContain('join("Documents").join("Miko").join("mikospace")')

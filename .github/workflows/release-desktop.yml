@@ -142,6 +142,60 @@ jobs:
           workspaces: 'desktop/src-tauri -> target'
           shared-key: ${{ matrix.rust_target }}
 
+      - name: Cache Tauri bundler tools
+        uses: actions/cache@v4
+        with:
+          path: desktop/src-tauri/target/.tauri
+          key: tauri-tools-${{ runner.os }}-${{ matrix.rust_target }}-nsis-3.11
+
+      - name: Prepare Windows NSIS tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $toolsDir = Join-Path $env:GITHUB_WORKSPACE 'desktop/src-tauri/target/.tauri/NSIS'
+          $makensis = Join-Path $toolsDir 'makensis.exe'
+          if (Test-Path $makensis) {
+            Write-Host "Using cached NSIS tools at $toolsDir"
+            exit 0
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP 'nsis-3.11.zip'
+          $url = 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'
+          $downloaded = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+              Write-Host "Downloading NSIS tools (attempt $attempt/5)"
+              curl.exe --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 300 --output $archive $url
+              if ($LASTEXITCODE -ne 0) { throw "curl exited with $LASTEXITCODE" }
+              $downloaded = $true
+              break
+            } catch {
+              if ($attempt -eq 5) { throw }
+              Start-Sleep -Seconds ([Math]::Min(30, $attempt * 5))
+            }
+          }
+          if (-not $downloaded) { throw 'NSIS archive download failed' }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP 'nsis-3.11-extracted'
+          Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractDir -Force
+          $sourceDir = (Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'makensis.exe' | Select-Object -First 1).Directory.FullName
+          if (-not $sourceDir) { throw 'Downloaded NSIS archive does not contain makensis.exe' }
+          New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null
+          Copy-Item -Path (Join-Path $sourceDir '*') -Destination $toolsDir -Recurse -Force
+          if (-not (Test-Path $makensis)) { throw "NSIS tools were not prepared at $toolsDir" }
+
+      - name: Validate updater signing configuration
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not configured in GitHub repository secrets."
+            echo "::error::The release cannot produce signed updater artifacts or latest.json."
+            exit 1
+          fi
+
       # ── Install dependencies ─────────────────────────────────
       - name: Install root dependencies
         run: bun install
