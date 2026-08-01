@@ -1,10 +1,12 @@
-export type SkillSource = 'project' | 'plugin' | 'mcp' | 'bundled' | 'user'
+export type SkillSource = 'project' | 'plugin' | 'mcp' | 'bundled' | 'user' | 'marketplace'
+export type ResourceOrigin = 'builtin' | 'user' | 'marketplace' | 'plugin' | 'legacy'
 
 export type SkillMeta = {
   name: string
   displayName?: string
   description: string
   source: SkillSource
+  origin?: ResourceOrigin
   userInvocable: boolean
   version?: string
   contentLength: number
@@ -14,6 +16,13 @@ export type SkillMeta = {
   protected?: boolean
   /** 是否允许客户端直接修改元数据或打开编辑入口。 */
   canEdit?: boolean
+  /** 是否允许客户端删除。 */
+  canDelete?: boolean
+  /** 当前同名资源中是否实际生效。 */
+  effective?: boolean
+  /** 如果被更高优先级同名资源覆盖，这里标记覆盖来源。 */
+  shadowedBy?: ResourceOrigin
+  packageId?: string
   /** 领域分类（web/audit/asset/mobile/binary/redteam/forensics/cloud/custom）。
    *  缺失兜底 'custom'。前端据此分组展示，与设置-工具页面保持一致。 */
   category?: string

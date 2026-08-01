@@ -140,7 +140,6 @@ async function compileExecutable({
       '@azure/identity',
       // ant-internal / 可选工具
       '@anthropic-ai/mcpb',
-      'fflate',
       'sharp',
       'react-devtools-core',
     ],

@@ -78,7 +78,8 @@ export function SkillDetail() {
   const currentFile = files.find((f) => f.path === normalizedSelection) || files[0]
   const frontmatter = currentFile?.frontmatter
   const metaEntries = getMetaEntries(frontmatter)
-  const canEdit = meta.canEdit ?? (meta.source === 'project' && !meta.protected)
+  const canEdit = meta.canEdit ?? ((meta.source === 'project' || meta.source === 'user') && !meta.protected)
+  const canDelete = meta.canDelete ?? canEdit
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 min-w-0">
@@ -91,7 +92,7 @@ export function SkillDetail() {
           {t('settings.skills.back')}
         </button>
 
-        {canEdit && (
+        {canDelete && (
           <button
             onClick={() => setConfirmDelete(true)}
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-[var(--color-error)] transition-colors hover:bg-[var(--color-error-container)]"

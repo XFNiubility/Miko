@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { getCwd } from '../../utils/cwd.js'
 import {
+  getBuiltinSkillsDir,
   getSkillsDir,
   getUserSkillsDir,
 } from '../../utils/kimoPaths.js'
@@ -21,6 +22,7 @@ import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
 import { isProtectedSkill } from '../services/protectedResources.js'
 import { BUILTIN_CATEGORIES } from '../services/categories.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { getInstalledMarketplaceSkillLocations } from '../../services/marketplaceService.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
@@ -30,22 +32,31 @@ type SkillMeta = {
   name: string
   displayName?: string
   description: string
-  source: 'project' | 'plugin'
+  source: 'project' | 'plugin' | 'bundled' | 'user' | 'marketplace'
+  origin: 'builtin' | 'user' | 'marketplace' | 'plugin' | 'legacy'
   userInvocable: boolean
   version?: string
   contentLength: number
   hasDirectory: boolean
   pluginName?: string
+  packageId?: string
   /** 内置受保护 skill（A 档保护）—— 前端据此隐藏删除入口，删除 API 亦兜底拒绝。 */
   protected?: boolean
   /** 是否允许客户端直接修改此 skill 的元数据或触发编辑入口。 */
   canEdit: boolean
+  /** 是否允许客户端删除。 */
+  canDelete: boolean
+  /** 当前同名资源中是否实际生效。 */
+  effective: boolean
+  /** 如果被更高优先级同名资源覆盖，这里标记覆盖来源。 */
+  shadowedBy?: 'builtin' | 'user' | 'marketplace' | 'plugin' | 'legacy'
   /** 领域分类（web/audit/asset/mobile/binary/redteam/forensics/cloud/custom）。
    *  读 frontmatter.category，缺失兜底 'custom'。前端据此分组展示。 */
   category: string
 }
 
 type SkillSource = SkillMeta['source']
+type SkillOrigin = SkillMeta['origin']
 
 type FileTreeNode = {
   name: string
@@ -103,7 +114,9 @@ async function loadSkillMeta(
   skillDir: string,
   skillName: string,
   source: SkillSource,
+  origin: SkillMeta['origin'],
   pluginName?: string,
+  packageId?: string,
 ): Promise<SkillMeta | null> {
   const skillFile = path.join(skillDir, 'SKILL.md')
   try {
@@ -119,19 +132,25 @@ async function loadSkillMeta(
       'No description'
 
     const protectedSkill = isProtectedSkill(skillName)
+    const resolvedOrigin = protectedSkill && origin === 'user' ? 'builtin' : origin
+    const resolvedSource = resolvedOrigin === 'builtin' ? 'bundled' : source
 
     return {
       name: skillName,
       displayName: (frontmatter.name as string) || undefined,
       description,
-      source,
+      source: resolvedSource,
+      origin: resolvedOrigin,
       userInvocable: frontmatter['user-invocable'] !== false,
       version: frontmatter.version != null ? String(frontmatter.version) : undefined,
       contentLength: raw.length,
       hasDirectory: true,
       pluginName,
+      packageId,
       protected: protectedSkill || undefined,
-      canEdit: source === 'project' && !protectedSkill,
+      canEdit: resolvedOrigin === 'user' && !protectedSkill,
+      canDelete: resolvedOrigin === 'user' && !protectedSkill,
+      effective: true,
       category:
         typeof frontmatter.category === 'string' && frontmatter.category.trim()
           ? frontmatter.category.trim()
@@ -226,6 +245,7 @@ async function buildFileTree(
 async function collectSkillsFromRoots(
   skillRoots: string[],
   source: SkillSource,
+  origin: SkillMeta['origin'],
 ): Promise<SkillMeta[]> {
   const skills: SkillMeta[] = []
   const seenNames = new Set<string>()
@@ -247,7 +267,7 @@ async function collectSkillsFromRoots(
         continue
       }
 
-      const meta = await loadSkillMeta(path.join(root, entry.name), entry.name, source)
+      const meta = await loadSkillMeta(path.join(root, entry.name), entry.name, source, origin)
       if (!meta) continue
 
       seenNames.add(entry.name)
@@ -258,6 +278,41 @@ async function collectSkillsFromRoots(
   return skills
 }
 
+async function collectMarketplaceSkills(): Promise<SkillMeta[]> {
+  const locations = await getInstalledMarketplaceSkillLocations()
+  const skills: SkillMeta[] = []
+  const seenNames = new Set<string>()
+
+  for (const location of locations) {
+    if (seenNames.has(location.name)) continue
+    const meta = await loadSkillMeta(
+      location.skillDir,
+      location.name,
+      'marketplace',
+      'marketplace',
+      undefined,
+      location.packageId,
+    )
+    if (!meta) continue
+
+    seenNames.add(location.name)
+    skills.push(meta)
+  }
+
+  return skills
+}
+
+async function resolveMarketplaceSkillLocation(name: string): Promise<{
+  skillDir: string
+  packageId: string
+} | null> {
+  const locations = await getInstalledMarketplaceSkillLocations()
+  const location = locations.find((entry) => entry.name === name)
+  return location
+    ? { skillDir: location.skillDir, packageId: location.packageId }
+    : null
+}
+
 async function resolveSkillDir(
   source: SkillSource,
   name: string,
@@ -266,8 +321,12 @@ async function resolveSkillDir(
   const skillRoots =
     source === 'user'
       ? [getUserSkillsDir()]
+      : source === 'bundled'
+        ? [getBuiltinSkillsDir(), getSkillsDir()]
       : source === 'project'
         ? [getSkillsDir()]
+      : source === 'marketplace'
+        ? []
         : []
 
   for (const root of skillRoots) {
@@ -393,6 +452,7 @@ async function collectPluginSkills(): Promise<SkillMeta[]> {
       location.skillDir,
       name,
       'plugin',
+      'plugin',
       location.pluginName,
     )
     if (meta) {
@@ -403,15 +463,65 @@ async function collectPluginSkills(): Promise<SkillMeta[]> {
   return skills
 }
 
-async function collectAllSkills(cwd?: string, skillsDir?: string): Promise<SkillMeta[]> {
-  const projectRoots = skillsDir ? [skillsDir] : [getSkillsDir()]
+function originPriority(origin: SkillOrigin): number {
+  switch (origin) {
+    case 'user':
+      return 40
+    case 'marketplace':
+      return 30
+    case 'plugin':
+      return 20
+    case 'builtin':
+      return 10
+    case 'legacy':
+      return 0
+  }
+}
 
-  const [projectSkills, pluginSkills] = await Promise.all([
-    collectSkillsFromRoots(projectRoots, 'project'),
+function mergeEffectiveSkills(skills: SkillMeta[]): SkillMeta[] {
+  const byName = new Map<string, SkillMeta>()
+
+  for (const skill of skills) {
+    const existing = byName.get(skill.name)
+    if (!existing || originPriority(skill.origin) > originPriority(existing.origin)) {
+      if (existing) {
+        existing.effective = false
+        existing.shadowedBy = skill.origin
+      }
+      skill.effective = true
+      byName.set(skill.name, skill)
+    } else {
+      skill.effective = false
+      skill.shadowedBy = existing.origin
+    }
+  }
+
+  return [...byName.values()]
+}
+
+async function collectAllSkills(cwd?: string, skillsDir?: string): Promise<SkillMeta[]> {
+  if (skillsDir) {
+    const [externalSkills, pluginSkills] = await Promise.all([
+      collectSkillsFromRoots([skillsDir], 'project', 'user'),
+      collectPluginSkills(),
+    ])
+    const skills = mergeEffectiveSkills([...externalSkills, ...pluginSkills])
+    skills.sort((a, b) => a.name.localeCompare(b.name))
+    return skills
+  }
+
+  const builtinSkillsDir = getBuiltinSkillsDir()
+  const userSkillsDir = getSkillsDir()
+  const sameRoot = path.resolve(builtinSkillsDir) === path.resolve(userSkillsDir)
+
+  const [builtinSkills, userSkills, marketplaceSkills, pluginSkills] = await Promise.all([
+    sameRoot ? Promise.resolve([]) : collectSkillsFromRoots([builtinSkillsDir], 'bundled', 'builtin'),
+    collectSkillsFromRoots([userSkillsDir], 'user', 'user'),
+    collectMarketplaceSkills(),
     collectPluginSkills(),
   ])
 
-  const skills = [...projectSkills, ...pluginSkills]
+  const skills = mergeEffectiveSkills([...builtinSkills, ...userSkills, ...marketplaceSkills, ...pluginSkills])
   skills.sort((a, b) => a.name.localeCompare(b.name))
   return skills
 }
@@ -530,14 +640,13 @@ async function deleteSkill(rawName: string, url: URL): Promise<Response> {
     throw ApiError.badRequest('Invalid skill name')
   }
 
-  // 只允许删除 project 来源的 skill
+  // 只允许删除用户来源的 skill。project 保留为旧前端兼容入口，实际也落用户目录。
   const source = url.searchParams.get('source')
-  if (source !== 'project') {
-    throw ApiError.badRequest('Only project skills can be deleted')
+  if (source !== 'user' && source !== 'project') {
+    throw ApiError.badRequest('Only user skills can be deleted')
   }
 
-  // 内置 skill 不可删（A 档保护）。data/skills 里的核心 skill 会被判成 project 来源，
-  // 仅靠上面的 source 检查拦不住——名单守卫在此兜住。
+  // 内置 skill 不可删。过渡期内置和用户资源可能仍混在 data/skills，名单守卫继续兜底。
   if (isProtectedSkill(name)) {
     throw ApiError.badRequest(`内置 Skill 不可删除：${name}`)
   }
@@ -695,7 +804,13 @@ async function getSkillDetail(url: URL): Promise<Response> {
     throw ApiError.badRequest('Invalid skill name')
   }
 
-  if (source !== 'user' && source !== 'project' && source !== 'plugin') {
+  if (
+    source !== 'user' &&
+    source !== 'project' &&
+    source !== 'plugin' &&
+    source !== 'bundled' &&
+    source !== 'marketplace'
+  ) {
     throw ApiError.badRequest(`Unsupported source: ${source}`)
   }
 
@@ -707,7 +822,7 @@ async function getSkillDetail(url: URL): Promise<Response> {
     try {
       const stat = await fs.stat(candidate)
       if (stat.isDirectory()) {
-        const meta = await loadSkillMeta(candidate, name, 'project')
+        const meta = await loadSkillMeta(candidate, name, 'project', 'user')
         if (meta) {
           const { tree, files } = await buildFileTree(candidate)
           return Response.json({ detail: { meta, tree, files, skillRoot: candidate } })
@@ -720,9 +835,13 @@ async function getSkillDetail(url: URL): Promise<Response> {
     source === 'plugin' ? await collectPluginSkillDirectories() : null
 
   const pluginLocation = pluginLocations?.get(name)
+  const marketplaceLocation =
+    source === 'marketplace' ? await resolveMarketplaceSkillLocation(name) : null
   const skillDir =
     source === 'plugin'
       ? pluginLocation?.skillDir ?? null
+      : source === 'marketplace'
+        ? marketplaceLocation?.skillDir ?? null
       : await resolveSkillDir(source, name, cwd)
 
   if (!skillDir) {
@@ -733,7 +852,9 @@ async function getSkillDetail(url: URL): Promise<Response> {
     skillDir,
     name,
     source,
+    source === 'plugin' ? 'plugin' : source === 'bundled' ? 'builtin' : source === 'marketplace' ? 'marketplace' : 'user',
     pluginLocation?.pluginName,
+    marketplaceLocation?.packageId,
   )
   if (!meta) {
     throw ApiError.notFound(`Skill missing SKILL.md: ${name}`)

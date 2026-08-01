@@ -8,6 +8,7 @@ import {
   join,
   sep as pathSep,
   relative,
+  resolve,
 } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
@@ -62,7 +63,8 @@ import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
 import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
-import { getSkillsDir, getUserConfigDir } from '../utils/kimoPaths.js'
+import { getBuiltinSkillsDir, getSkillsDir } from '../utils/kimoPaths.js'
+import { getInstalledMarketplaceSkillLocations } from '../services/marketplaceService.js'
 
 export type LoadedFrom =
   | 'commands_DEPRECATED'
@@ -70,6 +72,7 @@ export type LoadedFrom =
   | 'plugin'
   | 'managed'
   | 'bundled'
+  | 'marketplace'
   | 'mcp'
 
 /**
@@ -479,6 +482,46 @@ async function loadSkillsFromSkillsDir(
   return results.filter((r): r is SkillWithPath => r !== null)
 }
 
+async function loadMarketplaceSkills(): Promise<SkillWithPath[]> {
+  const fs = getFsImplementation()
+  const locations = await getInstalledMarketplaceSkillLocations()
+  const results: SkillWithPath[] = []
+
+  for (const location of locations) {
+    const skillFilePath = join(location.skillDir, 'SKILL.md')
+    try {
+      const content = await fs.readFile(skillFilePath, { encoding: 'utf-8' })
+      const { frontmatter, content: markdownContent } = parseFrontmatter(
+        content,
+        skillFilePath,
+      )
+      const parsed = parseSkillFrontmatterFields(
+        frontmatter,
+        markdownContent,
+        location.name,
+      )
+      const paths = parseSkillPaths(frontmatter)
+
+      results.push({
+        skill: createSkillCommand({
+          ...parsed,
+          skillName: location.name,
+          markdownContent,
+          source: 'userSettings',
+          baseDir: location.skillDir,
+          loadedFrom: 'marketplace',
+          paths,
+        }),
+        filePath: skillFilePath,
+      })
+    } catch (error) {
+      if (!isENOENT(error)) logError(error)
+    }
+  }
+
+  return results
+}
+
 // --- Legacy /commands/ loader ---
 
 function isSkillFile(filePath: string): boolean {
@@ -637,9 +680,11 @@ async function loadSkillsFromCommandsDir(
  */
 export const getSkillDirCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
-    const userSkillsDir = join(getUserConfigDir(), 'skills')
+    const userSkillsDir = getSkillsDir()
     const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
-    const projectSkillsDirs = [getSkillsDir()]
+    const builtinSkillsDir = getBuiltinSkillsDir()
+    const projectSkillsDirs =
+      resolve(builtinSkillsDir) === resolve(userSkillsDir) ? [] : [builtinSkillsDir]
 
     logForDebugging(
       `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}]`,
@@ -679,6 +724,7 @@ export const getSkillDirCommands = memoize(
     const [
       managedSkills,
       userSkills,
+      marketplaceSkills,
       projectSkillsNested,
       additionalSkillsNested,
       legacyCommands,
@@ -688,6 +734,9 @@ export const getSkillDirCommands = memoize(
         : loadSkillsFromSkillsDir(managedSkillsDir, 'policySettings'),
       isSettingSourceEnabled('userSettings') && !skillsLocked
         ? loadSkillsFromSkillsDir(userSkillsDir, 'userSettings')
+        : Promise.resolve([]),
+      isSettingSourceEnabled('userSettings') && !skillsLocked
+        ? loadMarketplaceSkills()
         : Promise.resolve([]),
       projectSettingsEnabled
         ? Promise.all(
@@ -717,6 +766,7 @@ export const getSkillDirCommands = memoize(
     const allSkillsWithPaths = [
       ...managedSkills,
       ...userSkills,
+      ...marketplaceSkills,
       ...projectSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
       ...legacyCommands,
@@ -796,7 +846,7 @@ export const getSkillDirCommands = memoize(
     }
 
     logForDebugging(
-      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
+      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, marketplace: ${marketplaceSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
     )
 
     return unconditionalSkills

@@ -5,6 +5,7 @@ import { useTranslation } from '../../i18n'
 import type { SkillMeta, SkillSource } from '../../types/skill'
 import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
+import { securityApi } from '../../api/security'
 
 /** 分类 id → 中文标签 + 顺序（镜像后端 BUILTIN_CATEGORIES，与设置-工具页面一致）。 */
 const CATEGORY_META: Record<string, { label: string; order: number }> = {
@@ -30,6 +31,7 @@ const SOURCE_ACCENT_CLASSES: Record<SkillSource, string> = {
   mcp: 'bg-[var(--color-info-container)] text-[var(--color-info)]',
   bundled: 'bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)]',
   user: 'bg-[var(--color-surface-container-high)] text-[var(--color-text-secondary)]',
+  marketplace: 'bg-[var(--color-info-container)] text-[var(--color-info)]',
 }
 
 function estimateTokens(contentLength: number) {
@@ -346,6 +348,21 @@ export function SkillList({ skillsDir }: { skillsDir?: string }) {
                 const chatStore = useChatStore.getState()
                 const tabStore = useTabStore.getState()
                 const sessionId = await sessionStore.createSession()
+                await securityApi.createSessionTask(sessionId, {
+                  type: 'skill_create',
+                  title: `创建 Skill - ${name}`,
+                  status: 'running',
+                  sourceRefs: [{ type: 'session', id: sessionId }],
+                  targetRefs: [{ type: 'skill', id: name, title: name }],
+                  events: [{
+                    timestamp: new Date().toISOString(),
+                    level: 'info',
+                    phase: 'started',
+                    message: '已启动 skill-creator-agent，会在当前会话中生成 Skill',
+                  }],
+                }).catch((err) => {
+                  console.warn('[skills] failed to create session task', err)
+                })
                 const msg = createDesc.trim()
                   ? `/skill-creator-agent 创建 ${name}：${createDesc.trim()}`
                   : `/skill-creator-agent 创建 ${name}`

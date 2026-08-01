@@ -26,6 +26,7 @@ import {
   getAutoMemPath,
   isAutoMemoryEnabled,
   isAutoMemPath,
+  isExtractModeActive,
 } from '../../memdir/paths.js'
 import type { Tool } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -70,6 +71,12 @@ const teamMemPaths = feature('TEAMMEM')
 // ============================================================================
 // Helpers
 // ============================================================================
+
+export function shouldAttemptExtractMemoriesForMainAgent(
+  agentId: string | null | undefined,
+): boolean {
+  return !agentId && isExtractModeActive()
+}
 
 /**
  * Returns true if a message is visible to the model (sent in API calls).
@@ -528,12 +535,7 @@ export function initExtractMemories(): void {
     context: REPLHookContext,
     appendSystemMessage?: AppendSystemMessageFn,
   ): Promise<void> {
-    // Only run for the main agent, not subagents
-    if (context.toolUseContext.agentId) {
-      return
-    }
-
-    if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_passport_quail', false)) {
+    if (!shouldAttemptExtractMemoriesForMainAgent(context.toolUseContext.agentId)) {
       if (process.env.USER_TYPE === 'ant' && !hasLoggedGateFailure) {
         hasLoggedGateFailure = true
         logEvent('tengu_extract_memories_gate_disabled', {})

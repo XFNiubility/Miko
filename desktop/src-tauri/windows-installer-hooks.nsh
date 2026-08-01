@@ -1,5 +1,11 @@
 !macro NSIS_HOOK_PREINSTALL
-  DetailPrint "Stopping running kimo sidecars..."
+  DetailPrint "Stopping running miko processes..."
+  nsExec::ExecToLog 'taskkill /F /T /IM miko.exe'
+  Pop $0
+  nsExec::ExecToLog 'taskkill /F /T /IM kimo.exe'
+  Pop $0
+  nsExec::ExecToLog 'taskkill /F /T /IM claude-code-desktop.exe'
+  Pop $0
   nsExec::ExecToLog 'taskkill /F /T /IM claude-sidecar-x86_64-pc-windows-msvc.exe'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /T /IM claude-sidecar-aarch64-pc-windows-msvc.exe'
@@ -10,7 +16,11 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  DetailPrint "Stopping running kimo processes..."
+  DetailPrint "Stopping running miko processes..."
+  nsExec::ExecToLog 'taskkill /F /T /IM miko.exe'
+  Pop $0
+  nsExec::ExecToLog 'taskkill /F /T /IM kimo.exe'
+  Pop $0
   nsExec::ExecToLog 'taskkill /F /T /IM claude-code-desktop.exe'
   Pop $0
   nsExec::ExecToLog 'taskkill /F /T /IM claude-sidecar-x86_64-pc-windows-msvc.exe'

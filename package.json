@@ -9,6 +9,9 @@
   "scripts": {
     "kimo": "bun run ./bin/kimo",
     "start": "bun run ./bin/kimo",
+    "marketplace:local": "bun run scripts/local-marketplace-server.ts",
+    "marketplace:sign": "bun run scripts/sign-marketplace-catalog.ts",
+    "updates:local": "bun run scripts/local-update-server.ts",
     "check:native": "cd desktop && bun run build:sidecars && cd src-tauri && cargo check"
   },
   "dependencies": {
@@ -38,6 +41,7 @@
     "emoji-regex": "^10.6.0",
     "env-paths": "^4.0.0",
     "execa": "^9.6.1",
+    "fflate": "^0.8.3",
     "figures": "^6.1.0",
     "fuse.js": "^7.1.0",
     "get-east-asian-width": "^1.5.0",

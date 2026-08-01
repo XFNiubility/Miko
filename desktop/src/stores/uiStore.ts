@@ -41,6 +41,7 @@ export type SettingsTab =
   | 'tools'
   | 'memory'
   | 'plugins'
+  | 'marketplace'
   | 'computerUse'
   | 'diagnostics'
   | 'about'

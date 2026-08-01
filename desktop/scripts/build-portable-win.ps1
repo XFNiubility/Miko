@@ -1,14 +1,12 @@
 ﻿<#
   build-portable-win.ps1 — 出一个 Windows 绿色便携版（非 MSI）。
 
-  思路：编译出 release 散文件，拢成一个可拷走的目录，并在 exe 旁建
-  CLAUDE_CONFIG_DIR\ 子目录 + app-mode.json(mode=portable)，让程序启动时
-  determine_startup_portable_dir 命中便携模式 → 恒设 CLAUDE_CONFIG_DIR →
-  数据/agents/skills/tools 全锚 exe 旁，复刻 dev 效果，绕开 MSI 默认安装态
-  那些「未设 CLAUDE_CONFIG_DIR 而漏注入」的坑。
+  思路：编译出 release 散文件，拢成一个可拷走的目录。程序和官方内置资源
+  可以被重组覆盖；用户数据固定保留在 userdata\data，默认工作区固定保留在
+  mikospace。CLAUDE_CONFIG_DIR 只保留 app-mode.json 作为便携模式 marker。
 
-  内置 agents/skills/tools 预置进 <根>\CLAUDE_CONFIG_DIR\data\，三类资源同级，
-  不依赖只读旁路。
+  内置 agents/skills/tools 预置进 <根>\bundled-data\，用户新增/覆盖资源留在
+  <根>\userdata\data\。
 
   用法（PowerShell）：
     ./scripts/build-portable-win.ps1
@@ -116,6 +114,13 @@ function Copy-Tree {
   Copy-Item -LiteralPath $Src -Destination $Dst -Recurse -Force
 }
 
+function Remove-BuildOwnedPath {
+  param([string]$Path)
+  if (Test-Path $Path) {
+    Remove-Item -LiteralPath $Path -Recurse -Force
+  }
+}
+
 # ---------- 1. 编译 ----------
 Ensure-ToolPath
 Import-VsDevEnvironment
@@ -145,8 +150,12 @@ if ($env:SKIP_BUILD -ne '1') {
   Write-Step 'SKIP_BUILD=1 — reusing existing release artifacts.'
 }
 # ---------- 2. 组装便携目录 ----------
-if (Test-Path $outDir) { Remove-Item -LiteralPath $outDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+# 只清理构建拥有的路径。userdata/ 和 mikospace/ 是用户层，不能在重组便携包时删除。
+foreach ($entry in @('miko.exe', 'claude-sidecar.exe', '_up_', 'resources', 'bundled-data')) {
+  Remove-BuildOwnedPath (Join-Path $outDir $entry)
+}
 
 $exe = Join-Path $releaseDir 'miko.exe'
 $sidecar = Join-Path $releaseDir 'claude-sidecar.exe'
@@ -171,10 +180,25 @@ $resSrc = Join-Path $releaseDir 'resources'
 if (Test-Path $resSrc) {
   Copy-Item -LiteralPath $resSrc -Destination (Join-Path $outDir 'resources') -Recurse -Force
 }
-# ---------- 3. 便携数据骨架 CLAUDE_CONFIG_DIR\ ----------
+# ---------- 3. 便携 marker + 用户数据骨架 + 内置资源 ----------
 $portableCfg = Join-Path $outDir $configDirName
-$portableData = Join-Path $portableCfg 'data'
-New-Item -ItemType Directory -Force -Path $portableData | Out-Null
+$legacyPortableData = Join-Path $portableCfg 'data'
+$userData = Join-Path $outDir 'userdata\data'
+$userCache = Join-Path $outDir 'userdata\cache'
+$workspaceDir = Join-Path $outDir 'mikospace'
+$bundledData = Join-Path $outDir 'bundled-data'
+
+if ((Test-Path $legacyPortableData) -and -not (Test-Path $userData)) {
+  Write-Step 'Migrating existing CLAUDE_CONFIG_DIR\data to userdata\data...'
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $userData) | Out-Null
+  Copy-Item -LiteralPath $legacyPortableData -Destination $userData -Recurse -Force
+}
+
+New-Item -ItemType Directory -Force -Path $portableCfg | Out-Null
+New-Item -ItemType Directory -Force -Path $userData | Out-Null
+New-Item -ItemType Directory -Force -Path $userCache | Out-Null
+New-Item -ItemType Directory -Force -Path $workspaceDir | Out-Null
+New-Item -ItemType Directory -Force -Path $bundledData | Out-Null
 
 # app-mode.json → 触发 determine_startup_portable_dir 的便携判定
 Write-Step 'Writing app-mode.json (portable)...'
@@ -184,10 +208,10 @@ Write-Step 'Writing app-mode.json (portable)...'
 # 白名单与 src/server/services/protectedResources.ts 的 PROTECTED_AGENTS 对齐。
 $builtinAgents = @(
   'security-explore', 'Explore', 'Plan', 'general-purpose',
-  'verification', 'skill-creator-agent', 'skill-editor', 'statusline-setup'
+  'verification', 'security-resource-extractor', 'skill-creator-agent', 'skill-editor', 'statusline-setup'
 )
 $agentsSrc = Join-Path $repoRoot 'data\agents'
-$agentsDst = Join-Path $portableData 'agents'
+$agentsDst = Join-Path $bundledData 'agents'
 New-Item -ItemType Directory -Force -Path $agentsDst | Out-Null
 Write-Step 'Preseeding built-in agents...'
 foreach ($name in $builtinAgents) {
@@ -201,7 +225,7 @@ foreach ($name in $builtinAgents) {
 
 # skills：全量拷（排除两个非真 skill 的产物目录）。
 $skillsSrc = Join-Path $repoRoot 'data\skills'
-$skillsDst = Join-Path $portableData 'skills'
+$skillsDst = Join-Path $bundledData 'skills'
 $skillExclude = @('code-audit-workspace', 'php-deep-audit-workspace')
 New-Item -ItemType Directory -Force -Path $skillsDst | Out-Null
 Write-Step 'Preseeding skills...'
@@ -230,11 +254,18 @@ if ($invalidSkillDirs.Count -gt 0) {
   throw "[build-portable] copied skill directories missing SKILL.md: $names"
 }
 
-# tools：整目录拷（yaml + bin 二进制），便携态走同一份可写 data/tools。
+# tools：整目录拷（yaml + bin 二进制），便携态从 bundled-data/tools 作为内置只读目录读取。
 $toolsSrc = Join-Path $repoRoot 'data\tools'
 if (Test-Path $toolsSrc) {
   Write-Step 'Preseeding tools catalog + binaries...'
-  Copy-Item -LiteralPath $toolsSrc -Destination (Join-Path $portableData 'tools') -Recurse -Force
+  Copy-Item -LiteralPath $toolsSrc -Destination (Join-Path $bundledData 'tools') -Recurse -Force
+}
+
+# marketplace：预置本地市场目录到 bundled-data，安装状态仍写 userdata\data\marketplace。
+$marketplaceSrc = Join-Path $repoRoot 'data\marketplace'
+if (Test-Path $marketplaceSrc) {
+  Write-Step 'Preseeding local marketplace catalog + packages...'
+  Copy-Item -LiteralPath $marketplaceSrc -Destination (Join-Path $bundledData 'marketplace') -Recurse -Force
 }
 # ---------- 4. 摘要 ----------
 $agentCount = (Get-ChildItem -LiteralPath $agentsDst -Filter '*.md' -ErrorAction SilentlyContinue | Measure-Object).Count
@@ -244,10 +275,13 @@ Write-Host ''
 Write-Step 'Portable build finished.'
 Write-Step "Output: $outDir"
 Write-Step "  miko.exe / claude-sidecar.exe"
-Write-Step "  $configDirName\app-mode.json (mode=portable)"
-Write-Step "  $configDirName\data\agents  ($agentCount built-in)"
-Write-Step "  $configDirName\data\skills  ($skillCount)"
-Write-Step "  $configDirName\data\tools   (catalog + bin)"
+Write-Step "  $configDirName\app-mode.json (mode=portable marker)"
+Write-Step "  bundled-data\agents  ($agentCount built-in)"
+Write-Step "  bundled-data\skills  ($skillCount)"
+Write-Step "  bundled-data\tools   (catalog + bin)"
+Write-Step "  bundled-data\marketplace (local catalog + packages)"
+Write-Step "  userdata\data        (preserved user data)"
+Write-Step "  mikospace            (preserved default workspace)"
 Write-Host ''
 Write-Step 'Next: copy the whole folder somewhere writable and double-click miko.exe.'
 Write-Step 'Verify: chat works / cwd not Administrator / security-explore starts / skills load.'

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSecurityStore } from '../stores/securityStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { ConfirmDialog } from '../components/shared/ConfirmDialog'
-import type { CategoryDef, ExploreNode, Hint, ProjectMeta, ProjectStatus, SecurityProject, SessionSummary } from '../api/security'
+import { SecurityResourcesPanel } from './SecurityResourcesPanel'
+import type { CategoryDef, ExploreNode, Hint, ProjectExtractionStatus, ProjectMeta, ProjectStatus, SecurityProject, SessionSummary } from '../api/security'
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -960,7 +961,45 @@ function HintArea({ hints, onAddHint, busy }: { hints: Hint[]; onAddHint: (conte
 
 // ─── Detail body: stats + tabs ───────────────────────────────
 
-function DetailBody({ project, sessionSummaries, nodes, hints, isExtracting, busy, onAddHint }: { project: SecurityProject; sessionSummaries: SessionSummary[]; nodes: ExploreNode[]; hints: Hint[]; isExtracting: boolean; busy: boolean; onAddHint: (content: string) => void }) {
+function ProjectProcessBanner({
+  status,
+  isExtracting,
+}: {
+  status: ProjectExtractionStatus | null
+  isExtracting: boolean
+}) {
+  const current = status?.status ?? (isExtracting ? 'running' : 'idle')
+  if (current === 'idle') return null
+  const label = current === 'queued'
+    ? '等待提炼关联会话'
+    : current === 'running'
+      ? '正在从关联会话提炼项目脉络'
+      : current === 'done'
+        ? `项目脉络已更新，提取 ${status?.nodeCount ?? 0} 个节点`
+        : current === 'empty'
+          ? '未从关联会话中提取到结构化内容'
+          : '项目提炼失败'
+  const tone = current === 'failed'
+    ? 'border-[var(--color-error)]/30 bg-[var(--color-error-container)] text-[var(--color-error)]'
+    : current === 'empty'
+      ? 'border-[var(--color-warning)]/30 bg-[var(--color-warning-container)] text-[var(--color-warning)]'
+      : 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)]'
+  return (
+    <div className={`mx-6 mt-4 rounded-lg border px-3 py-2 text-sm ${tone}`}>
+      <div className="flex items-center gap-2">
+        {(current === 'queued' || current === 'running') && (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4 animate-spin">
+            <path d="M21 12a9 9 0 1 1-6.2-8.5" strokeLinecap="round" />
+          </svg>
+        )}
+        <span className="font-medium">{label}</span>
+      </div>
+      {status?.error && <div className="mt-1 text-xs">{status.error}</div>}
+    </div>
+  )
+}
+
+function DetailBody({ project, sessionSummaries, nodes, hints, extractionStatus, isExtracting, busy, onAddHint }: { project: SecurityProject; sessionSummaries: SessionSummary[]; nodes: ExploreNode[]; hints: Hint[]; extractionStatus: ProjectExtractionStatus | null; isExtracting: boolean; busy: boolean; onAddHint: (content: string) => void }) {
   const { meta, findings } = project
   const [tab, setTab] = useState<'explore' | 'findings' | 'sessions'>('explore')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
@@ -992,6 +1031,8 @@ function DetailBody({ project, sessionSummaries, nodes, hints, isExtracting, bus
           </div>
         ))}
       </div>
+
+      <ProjectProcessBanner status={extractionStatus} isExtracting={isExtracting} />
 
       <div className="flex gap-6 border-b border-[var(--color-border)] px-6">
         {([
@@ -1148,6 +1189,7 @@ function DetailPanel({
   sessionSummaries,
   nodes,
   hints,
+  extractionStatus,
   isExtracting,
   loading,
   error,
@@ -1167,6 +1209,7 @@ function DetailPanel({
   sessionSummaries: SessionSummary[]
   nodes: ExploreNode[]
   hints: Hint[]
+  extractionStatus: ProjectExtractionStatus | null
   isExtracting: boolean
   loading: boolean
   error: string | null
@@ -1226,7 +1269,7 @@ function DetailPanel({
   return (
     <div className={`flex min-w-0 flex-1 flex-col ${loading ? 'opacity-60 transition-opacity' : ''}`}>
       <DetailHeader project={project} busy={busy} categories={categories} catMeta={catMeta} onBack={onBack} onEdit={onEdit} onSetStatus={onSetStatus} onRefresh={onRefresh} onDelete={onDelete} />
-      <DetailBody project={project} sessionSummaries={sessionSummaries} nodes={nodes} hints={hints} isExtracting={isExtracting} busy={busy} onAddHint={onAddHint} />
+      <DetailBody project={project} sessionSummaries={sessionSummaries} nodes={nodes} hints={hints} extractionStatus={extractionStatus} isExtracting={isExtracting} busy={busy} onAddHint={onAddHint} />
     </div>
   )
 }
@@ -1242,6 +1285,7 @@ export function SecurityProjects() {
     sessionSummaries,
     nodes,
     hints,
+    projectExtractionStatus,
     isProjectsLoading,
     isDetailLoading,
     isExtracting,
@@ -1268,6 +1312,7 @@ export function SecurityProjects() {
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
   const [query, setQuery] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [section, setSection] = useState<'projects' | 'resources'>('projects')
 
   // 注册表解析器：内置兜底 + 自定义。
   const catMeta = useMemo(() => makeCatMeta(categories.length ? categories : []), [categories])
@@ -1316,7 +1361,29 @@ export function SecurityProjects() {
   const inDetail = selectedProjectId !== null
 
   return (
-    <div className="flex h-full min-h-0 w-full">
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+        {(['projects', 'resources'] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setSection(key)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              section === key
+                ? 'bg-[var(--color-surface-container-high)] text-[var(--color-text-primary)]'
+                : 'text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-secondary)]'
+            }`}
+          >
+            {key === 'projects' ? '项目' : '资源'}
+          </button>
+        ))}
+      </div>
+      {section === 'resources' ? (
+        <div className="flex min-h-0 flex-1 w-full">
+          <SecurityResourcesPanel />
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 w-full">
       <CategoryRail
         categories={categories}
         projects={projects}
@@ -1336,6 +1403,7 @@ export function SecurityProjects() {
           sessionSummaries={sessionSummaries}
           nodes={nodes}
           hints={hints}
+          extractionStatus={projectExtractionStatus}
           isExtracting={isExtracting}
           loading={isDetailLoading}
           error={detailError}
@@ -1395,6 +1463,8 @@ export function SecurityProjects() {
         confirmVariant="danger"
         loading={isMutating}
       />
+        </div>
+      )}
     </div>
   )
 }

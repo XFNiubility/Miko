@@ -1,5 +1,8 @@
 [CmdletBinding()]
 param(
+  [ValidateSet('', 'msi', 'nsis')]
+  [string]$Bundle = '',
+
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$TauriArgs
 )
@@ -16,6 +19,11 @@ $tauriTargetDir = Join-Path $desktopDir 'src-tauri\target'
 $canonicalOutputDir = Join-Path $desktopDir 'build-artifacts\windows-x64'
 $activeOutputDir = $canonicalOutputDir
 $appVersion = (Get-Content -Path (Join-Path $desktopDir 'src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json).version
+$windowsBundle = if ($Bundle) { $Bundle } elseif ($env:TAURI_WINDOWS_BUNDLE) { $env:TAURI_WINDOWS_BUNDLE } else { 'nsis' }
+
+if (@('msi', 'nsis') -notcontains $windowsBundle) {
+  throw "[build-windows-x64] Unsupported Windows bundle '$windowsBundle'. Use 'msi' or 'nsis'."
+}
 
 function Write-Step {
   param([string]$Message)
@@ -33,6 +41,36 @@ function Assert-Command {
 
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "[build-windows-x64] Missing required command: $Name"
+  }
+}
+
+function Test-TauriSigningKey {
+  return [bool]($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH)
+}
+
+function Assert-SecureUpdaterEndpoint {
+  param([string]$Endpoint)
+
+  if (-not $Endpoint) {
+    return
+  }
+
+  try {
+    $uri = [System.Uri]::new($Endpoint)
+  } catch {
+    throw "[build-windows-x64] LOCAL_UPDATE_ENDPOINT must be an absolute HTTPS URL. Received: $Endpoint"
+  }
+
+  if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https') {
+    throw "[build-windows-x64] LOCAL_UPDATE_ENDPOINT must use https. Tauri updater rejects insecure endpoints at app startup. Received: $Endpoint"
+  }
+}
+
+function Add-PathEntryIfExists {
+  param([string]$PathEntry)
+
+  if ((Test-Path $PathEntry) -and -not (($env:Path -split ';') -contains $PathEntry)) {
+    $env:Path = "$PathEntry;$env:Path"
   }
 }
 
@@ -76,11 +114,28 @@ function Get-RustCargoBinDir {
   return Join-Path $env:USERPROFILE '.cargo\bin'
 }
 
-function Ensure-RustInPath {
-  $cargoBinDir = Get-RustCargoBinDir
-  if ((Test-Path $cargoBinDir) -and -not (($env:Path -split ';') -contains $cargoBinDir)) {
-    $env:Path = "$cargoBinDir;$env:Path"
+function Get-BunBinDir {
+  return Join-Path $env:USERPROFILE '.bun\bin'
+}
+
+function Get-NsisBinDirs {
+  return @(
+    (Join-Path (Split-Path -Parent $repoRoot) '.build-tools\nsis-3.11\nsis-3.11\Bin'),
+    (Join-Path $env:ProgramFiles 'NSIS'),
+    (Join-Path ${env:ProgramFiles(x86)} 'NSIS')
+  ) | Where-Object { $_ }
+}
+
+function Ensure-BuildToolPaths {
+  Add-PathEntryIfExists (Get-BunBinDir)
+  Add-PathEntryIfExists (Get-RustCargoBinDir)
+  foreach ($nsisDir in Get-NsisBinDirs) {
+    Add-PathEntryIfExists $nsisDir
   }
+}
+
+function Test-NsisAvailable {
+  return [bool](Get-Command makensis -ErrorAction SilentlyContinue)
 }
 
 function Get-LatestArtifact {
@@ -113,12 +168,26 @@ function Get-StagedArtifactName {
 
   switch -Regex ($ArtifactName) {
     '^latest\.json$' { return 'latest.json' }
+    '\.exe\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe.sig" }
+    '\.exe$' { return "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe" }
     '\.msi\.zip\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip.sig" }
     '\.msi\.zip$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip" }
     '\.msi\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.sig" }
     '\.msi$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi" }
     default { return $ArtifactName }
   }
+}
+
+function Get-LocalUpdaterDownloadUrl {
+  param(
+    [string]$Endpoint,
+    [string]$ArtifactName
+  )
+
+  $endpointUri = [System.Uri]::new($Endpoint)
+  $builder = [System.UriBuilder]::new($endpointUri.Scheme, $endpointUri.Host, $endpointUri.Port)
+  $builder.Path = "download/$([System.Uri]::EscapeDataString($ArtifactName))"
+  return $builder.Uri.AbsoluteUri
 }
 
 function Resolve-OutputDirectory {
@@ -142,14 +211,23 @@ function Resolve-OutputDirectory {
 }
 
 Assert-WindowsHost
+Ensure-BuildToolPaths
 Assert-Command bun
 
-Ensure-RustInPath
 Import-VsDevEnvironment
 
 Assert-Command cargo
 Assert-Command rustc
 Assert-Command bunx
+
+if ($windowsBundle -eq 'nsis' -and -not (Test-NsisAvailable)) {
+  Write-Step 'NSIS makensis.exe not found locally; Tauri will try to download nsis-3.11 during bundling.'
+}
+
+if (-not $env:CLAUDE_CODE_BUN_TARGET) {
+  $env:CLAUDE_CODE_BUN_TARGET = 'bun-windows-x64'
+  Write-Step 'Using CLAUDE_CODE_BUN_TARGET=bun-windows-x64 for local Windows sidecar build'
+}
 
 if ($env:SKIP_INSTALL -ne '1') {
   Write-Step 'Installing root dependencies...'
@@ -195,20 +273,45 @@ $tauriBuildArgs = @(
   '--target',
   $targetTriple,
   '--bundles',
-  'msi',
+  $windowsBundle,
   '--ci'
 )
 
 $tempConfigPath = $null
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+$hasTauriSigningKey = Test-TauriSigningKey
+if ($env:LOCAL_UPDATE_ENDPOINT -or $env:LOCAL_UPDATE_PUBKEY -or -not $hasTauriSigningKey -or $windowsBundle -eq 'nsis') {
+  Assert-SecureUpdaterEndpoint -Endpoint $env:LOCAL_UPDATE_ENDPOINT
   $tempConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) 'cc-haha.tauri.local.windows.json'
-  $tempConfig = @{
-    bundle = @{
+  $tempConfigObject = @{}
+  $updaterConfig = @{}
+  if ($env:LOCAL_UPDATE_ENDPOINT) {
+    $updaterConfig.endpoints = @($env:LOCAL_UPDATE_ENDPOINT)
+    Write-Step "Using local updater endpoint: $env:LOCAL_UPDATE_ENDPOINT"
+  }
+  if ($env:LOCAL_UPDATE_PUBKEY) {
+    $updaterConfig.pubkey = $env:LOCAL_UPDATE_PUBKEY
+    Write-Step 'Using local updater public key from LOCAL_UPDATE_PUBKEY'
+  }
+  if ($updaterConfig.Count -gt 0) {
+    $tempConfigObject.plugins = @{
+      updater = $updaterConfig
+    }
+  }
+  if (-not $hasTauriSigningKey) {
+    $tempConfigObject.bundle = @{
       createUpdaterArtifacts = $false
     }
-  } | ConvertTo-Json -Depth 10
+    Write-Step 'TAURI_SIGNING_PRIVATE_KEY/TAURI_SIGNING_PRIVATE_KEY_PATH not set, disabling updater artifacts for local build'
+  }
+  if ($windowsBundle -eq 'nsis') {
+    if (-not $tempConfigObject.ContainsKey('bundle')) {
+      $tempConfigObject.bundle = @{}
+    }
+    $tempConfigObject.bundle.useLocalToolsDir = $true
+    Write-Step 'Using Tauri local tools dir for NSIS bundling'
+  }
+  $tempConfig = $tempConfigObject | ConvertTo-Json -Depth 10
   Set-Content -Path $tempConfigPath -Value $tempConfig -Encoding UTF8
-  Write-Step 'TAURI_SIGNING_PRIVATE_KEY not set, disabling updater artifacts for local build'
   $tauriBuildArgs += @('--config', $tempConfigPath)
 }
 
@@ -220,6 +323,7 @@ if ($null -ne $TauriArgs) {
 }
 
 Write-Step "Building Windows desktop app for $targetTriple"
+Write-Step "Windows bundle: $windowsBundle"
 
 Push-Location $desktopDir
 try {
@@ -242,7 +346,7 @@ $bundleRoots = @(
   (Join-Path $tauriTargetDir 'release\bundle')
 )
 
-$artifactPatterns = @('*.msi', '*.msi.sig', '*.msi.zip', '*.msi.zip.sig', 'latest.json')
+$artifactPatterns = @('*.exe', '*.exe.sig', '*.msi', '*.msi.sig', '*.msi.zip', '*.msi.zip.sig', 'latest.json')
 $copiedArtifacts = New-Object System.Collections.Generic.List[string]
 
 foreach ($root in $bundleRoots) {
@@ -263,18 +367,49 @@ foreach ($root in $bundleRoots) {
   }
 }
 
+if ($env:LOCAL_UPDATE_ENDPOINT) {
+  $latestPath = Join-Path $activeOutputDir 'latest.json'
+  $nsisArtifact = Join-Path $activeOutputDir "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe"
+  $nsisSignature = Join-Path $activeOutputDir "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe.sig"
+  if ((-not (Test-Path $latestPath)) -and (Test-Path $nsisArtifact) -and (Test-Path $nsisSignature)) {
+    $artifactName = Split-Path -Leaf $nsisArtifact
+    $latestManifest = @{
+      version = $appVersion
+      notes = "Local updater test build $appVersion"
+      pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+      platforms = @{
+        'windows-x86_64' = @{
+          signature = (Get-Content -LiteralPath $nsisSignature -Raw).Trim()
+          url = Get-LocalUpdaterDownloadUrl -Endpoint $env:LOCAL_UPDATE_ENDPOINT -ArtifactName $artifactName
+        }
+      }
+    } | ConvertTo-Json -Depth 10
+    Set-Content -Path $latestPath -Value $latestManifest -Encoding UTF8
+    $copiedArtifacts.Add($latestPath) | Out-Null
+    Write-Step "Generated local updater latest.json: $latestPath"
+  }
+}
+
 $msiInstaller = Get-LatestArtifact -SearchRoots @(
   (Join-Path $tauriTargetDir "$targetTriple\release\bundle\msi"),
   (Join-Path $tauriTargetDir 'release\bundle\msi')
 ) -Patterns @('*.msi')
 
+$nsisInstaller = Get-LatestArtifact -SearchRoots @(
+  (Join-Path $tauriTargetDir "$targetTriple\release\bundle\nsis"),
+  (Join-Path $tauriTargetDir 'release\bundle\nsis')
+) -Patterns @('*.exe')
+
 $msiInstallerPath = if ($msiInstaller) { $msiInstaller.FullName } else { 'not found' }
+$nsisInstallerPath = if ($nsisInstaller) { $nsisInstaller.FullName } else { 'not found' }
 
 $buildInfo = @(
   "App version: $appVersion"
   "Target triple: $targetTriple"
+  "Windows bundle: $windowsBundle"
   "Canonical output: $canonicalOutputDir"
   "Actual output: $activeOutputDir"
+  "Windows installer (NSIS): $nsisInstallerPath"
   "Windows installer (MSI): $msiInstallerPath"
   "Artifacts copied: $($copiedArtifacts.Count)"
   "Built at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
@@ -287,8 +422,12 @@ Write-Step 'Build finished.'
 Write-Step "Artifacts output: $activeOutputDir"
 if ($msiInstaller) {
   Write-Step "MSI installer source: $($msiInstaller.FullName)"
-} else {
-  Write-Step 'No MSI installer found under bundle directories.'
+}
+if ($nsisInstaller) {
+  Write-Step "NSIS installer source: $($nsisInstaller.FullName)"
+}
+if (-not $msiInstaller -and -not $nsisInstaller) {
+  Write-Step 'No Windows installer found under bundle directories.'
 }
 
 Write-Step "Canonical output: $canonicalOutputDir"

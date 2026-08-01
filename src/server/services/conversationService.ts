@@ -32,6 +32,7 @@ import { findCanonicalGitRoot } from '../../utils/git.js'
 import { sanitizePath } from '../../utils/path.js'
 import { buildNetworkEnvironment, loadNetworkSettings } from './networkSettings.js'
 import { buildChildEnv } from './sharedChildEnv.js'
+import { securityResourceService } from './securityResourceService.js'
 import { buildSecuritySessionArgs } from '../../agent/board-mcp/sessionArgs.js'
 import { BOARD_SESSION_SYSTEM_PROMPT, CATALOG_TIER0_PROMPT } from '../../agent/board-mcp/boardSessionPrompt.js'
 import { logError } from '../../utils/log.js'
@@ -1590,16 +1591,21 @@ export class ConversationService {
     attachments?: AttachmentRef[],
   ): Promise<UserContentBlock[]> {
     const materialized = await this.materializeAttachments(sessionId, attachments)
+    const resourceContext = await this.buildLinkedSecurityResourceContext(sessionId)
     const trimmed = content.trim()
     const text = materialized.pathPrefix
       ? `${materialized.pathPrefix}${trimmed || 'Please analyze the attached files.'}`.trim()
       : trimmed
 
-    const blocks: UserContentBlock[] = text
-      ? [{ type: 'text', text }]
-      : materialized.imageBlocks.length > 0
-        ? [{ type: 'text', text: 'Please analyze the attached image.' }]
-        : []
+    const blocks: UserContentBlock[] = resourceContext
+      ? [{ type: 'text', text: resourceContext }]
+      : []
+
+    if (text) {
+      blocks.push({ type: 'text', text })
+    } else if (materialized.imageBlocks.length > 0) {
+      blocks.push({ type: 'text', text: 'Please analyze the attached image.' })
+    }
 
     blocks.push(...materialized.imageBlocks)
     for (const metadataText of materialized.imageMetadataTexts) {
@@ -1607,6 +1613,18 @@ export class ConversationService {
     }
 
     return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }]
+  }
+
+  private async buildLinkedSecurityResourceContext(sessionId: string): Promise<string> {
+    try {
+      const resourceIds = await sessionService.getLinkedSecurityResourceIds(sessionId)
+      if (resourceIds.length === 0) return ''
+      const resources = await securityResourceService.getPromptResources(resourceIds)
+      return securityResourceService.buildPromptBlock(resources)
+    } catch (error) {
+      logError('linked_security_resource_context_failed', error, { sessionId })
+      return ''
+    }
   }
 
   private async materializeAttachments(

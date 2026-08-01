@@ -55,6 +55,7 @@ bug_attachments/
 # Private keys & credentials
 *.pem
 *.key
+local-updater.key.pub
 *.p12
 credentials*.json
 

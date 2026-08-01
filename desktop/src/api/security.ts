@@ -4,6 +4,172 @@ export type ProjectPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4'
 export type ProjectStatus = 'active' | 'paused' | 'completed'
 /** 内置分类 id；自定义分类是动态字符串，所以 ProjectMeta.category 用 string。 */
 export type ProjectCategory = 'web' | 'audit' | 'asset' | 'mobile' | 'binary' | 'custom'
+export type SecurityResourceKind =
+  | 'asset_note'
+  | 'scope_policy'
+  | 'recon_result'
+  | 'credential_note'
+  | 'manual_note'
+  | 'report_import'
+
+export type SecurityResourceMeta = {
+  id: string
+  title: string
+  kind: SecurityResourceKind
+  tags: string[]
+  summary: string
+  projectIds: string[]
+  sourceType?: 'manual_text' | 'uploaded_file' | 'session_ref' | 'external_ref'
+  sourceRefs?: Array<{ type: 'session' | 'file' | 'path' | 'url' | 'git' | 'manual'; id?: string; title?: string; value?: string }>
+  createdAt: number
+  updatedAt: number
+}
+
+export type SecurityResource = {
+  meta: SecurityResourceMeta
+  content: string
+  files: Array<{ name: string; path: string }>
+}
+
+export type SecurityResourceInput = {
+  title: string
+  kind?: SecurityResourceKind
+  tags?: string[]
+  summary?: string
+  content?: string
+  projectIds?: string[]
+}
+
+export type SecurityResourceUploadFile = {
+  name: string
+  dataBase64: string
+  mimeType?: string
+  size?: number
+}
+
+export type SecurityResourceImportInput = {
+  paths?: string[]
+  files?: SecurityResourceUploadFile[]
+  kind?: SecurityResourceKind
+  tags?: string[]
+  summary?: string
+  projectIds?: string[]
+}
+
+export type SecurityResourceFromSessionInput = {
+  sessionIds: string[]
+  title?: string
+  kind?: SecurityResourceKind
+  tags?: string[]
+  summary?: string
+  projectIds?: string[]
+}
+
+export type ResourceReferencePermissionStatus =
+  | 'not_required'
+  | 'pending'
+  | 'allowed'
+  | 'denied'
+  | 'failed'
+
+export type ResourceReadPolicy = {
+  mode: 'file' | 'list_only' | 'list_and_selected_files' | 'fetch_url' | 'clone_shallow'
+  maxDepth?: number
+  maxFiles?: number
+  maxBytesPerFile?: number
+}
+
+export type ResourceReference = {
+  id: string
+  type: 'local_file' | 'local_directory' | 'url' | 'git_repo' | 'domain' | 'ip' | 'note'
+  value: string
+  intent?: 'asset_source' | 'scope_policy' | 'reference_doc' | 'credential_note' | 'unknown'
+  permissionStatus: ResourceReferencePermissionStatus
+  readPolicy?: ResourceReadPolicy
+  sourceText?: string
+  createdAt: number
+  updatedAt: number
+  lastReadAt?: number
+  lastReadSummary?: string
+  lastError?: string
+}
+
+export type ResourceExtraction = {
+  status: 'idle' | 'queued' | 'running' | 'waiting_for_permission' | 'done' | 'failed'
+  phase?: string
+  summary: string
+  content: string
+  items: Array<{ type: string; value: string; description?: string; source?: string }>
+  warnings: string[]
+  error?: string
+  startedAt?: number
+  updatedAt: number
+  completedAt?: number | null
+}
+
+export type SessionTaskType =
+  | 'resource_from_session'
+  | 'project_from_session'
+  | 'recon'
+  | 'skill_create'
+  | 'skill_edit'
+  | 'mcp_install'
+  | 'marketplace_install'
+  | 'config_fix'
+
+export type SessionTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_permission'
+  | 'done'
+  | 'empty'
+  | 'failed'
+
+export type SessionTaskRef = {
+  type: 'session' | 'resource' | 'project' | 'skill' | 'mcp' | 'tool' | 'file' | 'url' | 'manual'
+  id?: string
+  title?: string
+  value?: string
+}
+
+export type SessionTaskEvent = {
+  timestamp: string
+  level: 'info' | 'warning' | 'error'
+  phase: string
+  message: string
+  data?: Record<string, unknown>
+}
+
+export type SessionTask = {
+  id: string
+  sessionId: string
+  type: SessionTaskType
+  title: string
+  status: SessionTaskStatus
+  sourceRefs: SessionTaskRef[]
+  targetRefs: SessionTaskRef[]
+  events: SessionTaskEvent[]
+  createdAt: number
+  updatedAt: number
+  completedAt?: number | null
+}
+
+export type SessionTaskInput = {
+  type: SessionTaskType
+  title: string
+  status?: 'queued' | 'running'
+  sourceRefs?: SessionTaskRef[]
+  targetRefs?: SessionTaskRef[]
+  events?: SessionTaskEvent[]
+}
+
+export type SessionTaskUpdateInput = {
+  title?: string
+  status?: 'queued' | 'running' | 'waiting_for_permission' | 'failed'
+  sourceRefs?: SessionTaskRef[]
+  targetRefs?: SessionTaskRef[]
+  event?: Partial<SessionTaskEvent> & Pick<SessionTaskEvent, 'level' | 'phase' | 'message'>
+}
 
 /** 分类定义（注册表项）。内置分类 builtin=true，不可删除。 */
 export type CategoryDef = {
@@ -82,6 +248,20 @@ export type SessionSummary = {
   conclusion: string
 }
 
+export type ProjectExtractionStatus = {
+  status: 'idle' | 'queued' | 'running' | 'done' | 'empty' | 'failed'
+  phase: string
+  source: 'linked_sessions'
+  sessionIds: string[]
+  sessionCount: number
+  nodeCount: number
+  findingCount: number
+  error?: string
+  startedAt?: number | null
+  updatedAt: number
+  completedAt?: number | null
+}
+
 /** 探索节点（统一模型）：D2 提炼/真黑板产出，前端用同一棵树渲染。 */
 export type ExploreNodeType = 'asset' | 'fact' | 'intent' | 'finding'
 export type ExplorePhase = 'recon' | 'asset' | 'probe' | 'exploit' | 'post' | 'other'
@@ -128,6 +308,64 @@ export type CreateProjectInput = {
 }
 
 export const securityApi = {
+  listResources: () => api.get<{ resources: SecurityResourceMeta[] }>('/api/security/resources'),
+
+  getResource: (id: string) =>
+    api.get<{ resource: SecurityResource }>(`/api/security/resources/${id}`),
+
+  createResource: (data: SecurityResourceInput) =>
+    api.post<{ resource: SecurityResource }>('/api/security/resources', data),
+
+  importResource: (data: SecurityResourceImportInput) =>
+    api.post<{ resource: SecurityResource }>('/api/security/resources/import', data),
+
+  createResourceFromSession: (data: SecurityResourceFromSessionInput) =>
+    api.post<{ resource: SecurityResource }>('/api/security/resources/from-session', data),
+
+  getResourceExtraction: (id: string) =>
+    api.get<{ extraction: ResourceExtraction | null }>(`/api/security/resources/${id}/extraction`),
+
+  extractResource: (id: string) =>
+    api.post<{ extraction: ResourceExtraction | null }>(`/api/security/resources/${id}/extract`),
+
+  getResourceReferences: (id: string) =>
+    api.get<{ references: ResourceReference[] }>(`/api/security/resources/${id}/references`),
+
+  updateResourceReference: (id: string, referenceId: string, data: { permissionStatus?: ResourceReferencePermissionStatus; readPolicy?: ResourceReadPolicy }) =>
+    api.patch<{ reference: ResourceReference }>(`/api/security/resources/${id}/references/${referenceId}`, data),
+
+  readResourceReference: (id: string, referenceId: string) =>
+    api.post<{ reference: ResourceReference; extraction: ResourceExtraction | null }>(`/api/security/resources/${id}/references/${referenceId}/read`),
+
+  updateResource: (id: string, data: Partial<SecurityResourceInput>) =>
+    api.patch<{ resource: SecurityResource }>(`/api/security/resources/${id}`, data),
+
+  deleteResource: (id: string) => api.delete<{ ok: true }>(`/api/security/resources/${id}`),
+
+  getSessionResources: (sessionId: string) =>
+    api.get<{ resourceIds: string[]; resources: SecurityResource[] }>(`/api/security/sessions/${sessionId}/resources`),
+
+  setSessionResources: (sessionId: string, resourceIds: string[]) =>
+    api.put<{ resourceIds: string[]; resources: SecurityResource[] }>(`/api/security/sessions/${sessionId}/resources`, { resourceIds }),
+
+  addSessionResource: (sessionId: string, resourceId: string) =>
+    api.post<{ resourceIds: string[]; resources: SecurityResource[] }>(`/api/security/sessions/${sessionId}/resources`, { resourceId }),
+
+  removeSessionResource: (sessionId: string, resourceId: string) =>
+    api.delete<{ resourceIds: string[]; resources: SecurityResource[] }>(`/api/security/sessions/${sessionId}/resources/${resourceId}`),
+
+  getSessionTasks: (sessionId: string) =>
+    api.get<{ tasks: SessionTask[] }>(`/api/security/sessions/${sessionId}/tasks`),
+
+  createSessionTask: (sessionId: string, data: SessionTaskInput) =>
+    api.post<{ task: SessionTask }>(`/api/security/sessions/${sessionId}/tasks`, data),
+
+  getSessionTask: (sessionId: string, taskId: string) =>
+    api.get<{ task: SessionTask }>(`/api/security/sessions/${sessionId}/tasks/${taskId}`),
+
+  updateSessionTask: (sessionId: string, taskId: string, data: SessionTaskUpdateInput) =>
+    api.patch<{ task: SessionTask }>(`/api/security/sessions/${sessionId}/tasks/${taskId}`, data),
+
   list: () => api.get<{ projects: ProjectMeta[] }>('/api/security/projects'),
 
   /** 分类注册表：内置 + 用户自定义。 */
@@ -144,9 +382,12 @@ export const securityApi = {
     api.post<{ project: ProjectMeta }>('/api/security/projects', data),
 
   get: (id: string) =>
-    api.get<{ project: SecurityProject; sessionSummaries: SessionSummary[]; nodes: ExploreNode[]; hints: Hint[] }>(
+    api.get<{ project: SecurityProject; sessionSummaries: SessionSummary[]; nodes: ExploreNode[]; hints: Hint[]; extractionStatus?: ProjectExtractionStatus }>(
       `/api/security/projects/${id}`,
     ),
+
+  getProjectExtractionStatus: (id: string) =>
+    api.get<{ extractionStatus: ProjectExtractionStatus }>(`/api/security/projects/${id}/extraction-status`),
 
   update: (id: string, data: Partial<Pick<ProjectMeta, 'name' | 'priority' | 'status'>>) =>
     api.patch<{ ok: true }>(`/api/security/projects/${id}`, data),

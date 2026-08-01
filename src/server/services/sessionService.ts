@@ -1,4 +1,4 @@
-import { getDataDir } from '../../utils/kimoPaths.js';
+import { getDataDir, getDefaultWorkspaceDir } from '../../utils/kimoPaths.js';
 /**
  * Session Service — 会话文件的读写操作封装
  *
@@ -83,6 +83,7 @@ export type SessionLaunchInfo = {
   runtimeModelId?: string
   effortLevel?: string
   securityMode?: boolean
+  linkedSecurityResourceIds?: string[]
 }
 
 export type TrimSessionResult = {
@@ -254,6 +255,20 @@ const VALID_SESSION_PERMISSION_MODES = new Set([
   'dontAsk',
 ])
 const VALID_SESSION_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'max'])
+
+function normalizeLinkedSecurityResourceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const id = item.trim()
+    if (!/^res_[a-zA-Z0-9-]+$/.test(id) || seen.has(id)) continue
+    seen.add(id)
+    result.push(id)
+  }
+  return result
+}
 
 type ContentBlock = Record<string, unknown>
 
@@ -1702,12 +1717,16 @@ export class SessionService {
    * 返回便携版根目录下的 mikospace 目录
    */
   private getDefaultWorkspace(): string {
-    const dataDir = getDataDir()
-    // dataDir 示例: D:\mikoexe\miko\portable-win-x64\CLAUDE_CONFIG_DIR\data
-    // 便携版根目录: D:\mikoexe\miko\portable-win-x64
-    // mikospace: D:\mikoexe\miko\portable-win-x64\mikospace
-    const portableRoot = path.dirname(path.dirname(dataDir))
-    return path.join(portableRoot, 'mikospace')
+    return getDefaultWorkspaceDir()
+  }
+
+  private normalizeRequestedWorkDir(workDir: string): string {
+    const trimmed = workDir.trim()
+    if (trimmed === '~') return os.homedir().normalize('NFC')
+    if (trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+      return path.join(os.homedir(), trimmed.slice(2)).normalize('NFC')
+    }
+    return trimmed.normalize('NFC')
   }
 
   /**
@@ -1721,8 +1740,18 @@ export class SessionService {
     // kimo: workDir 优先级 —— 调用方显式传入 > CLI 入口的应用根(KIMO_DATA_DIR) >
     // 默认工作区（kimospace）。便携版场景下，空白会话使用 kimospace 目录，
     // 避免污染程序数据目录，同时确保用户文件有合理的默认位置。
-    const resolvedWorkDir = workDir || process.env.KIMO_DATA_DIR || this.getDefaultWorkspace()
+    const hasExplicitWorkDir = typeof workDir === 'string' && workDir.trim().length > 0
+    const requestedWorkDir = hasExplicitWorkDir
+      ? this.normalizeRequestedWorkDir(workDir)
+      : undefined
+    const resolvedWorkDir = hasExplicitWorkDir
+      ? requestedWorkDir!
+      : process.env.KIMO_DATA_DIR || this.getDefaultWorkspace()
     const sessionId = crypto.randomUUID()
+
+    if (!hasExplicitWorkDir) {
+      await fs.mkdir(resolvedWorkDir, { recursive: true })
+    }
 
     // Resolve to absolute path. NOTE: path.resolve() uses process.cwd() to
     // expand relative paths — in bundled sidecar mode the server's cwd is
@@ -1922,6 +1951,7 @@ export class SessionService {
     let runtimeModelId: string | undefined
     let effortLevel: string | undefined
     let securityMode: boolean | undefined
+    let linkedSecurityResourceIds: string[] | undefined
 
     for (const entry of entries) {
       if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') {
@@ -1945,6 +1975,9 @@ export class SessionService {
         if (typeof record.securityMode === 'boolean') {
           securityMode = record.securityMode
         }
+        if (Array.isArray(record.linkedSecurityResourceIds)) {
+          linkedSecurityResourceIds = normalizeLinkedSecurityResourceIds(record.linkedSecurityResourceIds)
+        }
       }
     }
     const transcriptMessageCount = this.countTranscriptMessages(entries)
@@ -1962,7 +1995,26 @@ export class SessionService {
       ...(runtimeModelId ? { runtimeModelId } : {}),
       ...(effortLevel ? { effortLevel } : {}),
       ...(securityMode !== undefined ? { securityMode } : {}),
+      ...(linkedSecurityResourceIds !== undefined ? { linkedSecurityResourceIds } : {}),
     }
+  }
+
+  async getLinkedSecurityResourceIds(sessionId: string): Promise<string[]> {
+    return (await this.getSessionLaunchInfo(sessionId))?.linkedSecurityResourceIds ?? []
+  }
+
+  async setLinkedSecurityResourceIds(sessionId: string, resourceIds: string[]): Promise<string[]> {
+    const launchInfo = await this.getSessionLaunchInfo(sessionId)
+    if (!launchInfo) {
+      throw ApiError.notFound(`Session not found: ${sessionId}`)
+    }
+    const linkedSecurityResourceIds = normalizeLinkedSecurityResourceIds(resourceIds)
+    await this.appendSessionMetadata(sessionId, {
+      workDir: launchInfo.workDir,
+      repository: launchInfo.repository,
+      linkedSecurityResourceIds,
+    })
+    return linkedSecurityResourceIds
   }
 
   async deleteSessionFile(sessionId: string): Promise<void> {
@@ -2031,6 +2083,7 @@ export class SessionService {
       runtimeModelId?: string
       effortLevel?: string
       securityMode?: boolean
+      linkedSecurityResourceIds?: string[]
     }
   ): Promise<void> {
     const matches = await this.findSessionFiles(sessionId)
@@ -2068,6 +2121,9 @@ export class SessionService {
         ? { effortLevel: metadata.effortLevel }
         : {}),
       ...(metadata.securityMode !== undefined ? { securityMode: metadata.securityMode } : {}),
+      ...(metadata.linkedSecurityResourceIds !== undefined
+        ? { linkedSecurityResourceIds: normalizeLinkedSecurityResourceIds(metadata.linkedSecurityResourceIds) }
+        : {}),
       timestamp: new Date().toISOString(),
     })
 

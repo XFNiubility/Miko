@@ -14,6 +14,7 @@ import type { Blackboard, Fact, Intent, Hint } from '../../agent/blackboard.js'
 import { extractNodes } from './findingsExtractionService.js'
 import type { ExploreNodeType, ExplorePhase, PriorNode } from './findingsExtractionService.js'
 import * as boardStore from './boardStore.js'
+import { sessionTaskService } from './sessionTaskService.js'
 // 分类常量已抽到共享模块（project/agent/skill/tool 四类资源共用）。
 // re-export 保持本模块既有引用方（API/测试）的 import 路径不变。
 import { BUILTIN_CATEGORIES, type CategoryDef, type ProjectCategory } from './categories.js'
@@ -123,6 +124,22 @@ export type SessionSummary = {
   conclusion: string
 }
 
+export type ProjectExtractionStatusValue = 'idle' | 'queued' | 'running' | 'done' | 'empty' | 'failed'
+
+export type ProjectExtractionStatus = {
+  status: ProjectExtractionStatusValue
+  phase: string
+  source: 'linked_sessions'
+  sessionIds: string[]
+  sessionCount: number
+  nodeCount: number
+  findingCount: number
+  error?: string
+  startedAt?: number | null
+  updatedAt: number
+  completedAt?: number | null
+}
+
 /**
  * 从一段文本里提取第一个 URL / host:port / IP 作为渗透目标。
  * 纯函数，便于单测。提取不到返回 null。
@@ -166,6 +183,7 @@ function slugifyCategoryId(label: string): string {
 
 const SECURITY_DIR = 'security'
 const PROJECTS_INDEX = 'projects.json'
+const EXTRACTION_STATUS_FILE = 'extraction-status.json'
 
 function getSecurityDir(): string {
   return path.join(getDataDir(), SECURITY_DIR)
@@ -182,6 +200,53 @@ export class SecurityProjectService {
   private normalizeMeta(meta: ProjectMeta): ProjectMeta {
     if (!meta.category) return { ...meta, category: 'custom' }
     return meta
+  }
+
+  private buildExtractionStatus(
+    sessionIds: string[],
+    status: ProjectExtractionStatusValue,
+    patch: Partial<ProjectExtractionStatus> = {},
+  ): ProjectExtractionStatus {
+    const now = Date.now()
+    return {
+      status,
+      phase: patch.phase ?? status,
+      source: 'linked_sessions',
+      sessionIds,
+      sessionCount: sessionIds.length,
+      nodeCount: patch.nodeCount ?? 0,
+      findingCount: patch.findingCount ?? 0,
+      error: patch.error,
+      startedAt: patch.startedAt ?? (status === 'running' || status === 'queued' ? now : null),
+      updatedAt: now,
+      completedAt: patch.completedAt ?? (status === 'done' || status === 'empty' || status === 'failed' ? now : null),
+    }
+  }
+
+  private normalizeExtractionStatus(value: ProjectExtractionStatus | null, sessionIds: string[]): ProjectExtractionStatus {
+    if (!value || typeof value !== 'object') {
+      return this.buildExtractionStatus(sessionIds, sessionIds.length > 0 ? 'queued' : 'idle')
+    }
+    const status = ['idle', 'queued', 'running', 'done', 'empty', 'failed'].includes(value.status)
+      ? value.status
+      : 'idle'
+    return {
+      status,
+      phase: typeof value.phase === 'string' ? value.phase : status,
+      source: 'linked_sessions',
+      sessionIds: Array.isArray(value.sessionIds) ? value.sessionIds.filter((id): id is string => typeof id === 'string') : sessionIds,
+      sessionCount: typeof value.sessionCount === 'number' ? value.sessionCount : sessionIds.length,
+      nodeCount: typeof value.nodeCount === 'number' ? value.nodeCount : 0,
+      findingCount: typeof value.findingCount === 'number' ? value.findingCount : 0,
+      error: typeof value.error === 'string' ? value.error : undefined,
+      startedAt: typeof value.startedAt === 'number' ? value.startedAt : null,
+      updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+      completedAt: typeof value.completedAt === 'number' ? value.completedAt : null,
+    }
+  }
+
+  private async writeExtractionStatus(projectId: string, status: ProjectExtractionStatus): Promise<void> {
+    await this.writeJson(getProjectDir(projectId), EXTRACTION_STATUS_FILE, status)
   }
 
   async listProjects(): Promise<ProjectMeta[]> {
@@ -210,6 +275,13 @@ export class SecurityProjectService {
       board: board ?? { facts: [], intents: [], hints: [], closedIntentIds: [] },
       findings: findings ?? [],
     }
+  }
+
+  async getExtractionStatus(projectId: string): Promise<ProjectExtractionStatus> {
+    const project = await this.getProject(projectId)
+    if (!project) throw ApiError.notFound('Project not found')
+    const stored = await this.readJson<ProjectExtractionStatus>(getProjectDir(projectId), EXTRACTION_STATUS_FILE)
+    return this.normalizeExtractionStatus(stored, project.meta.sessionIds)
   }
 
   async createProject(input: {
@@ -267,6 +339,7 @@ export class SecurityProjectService {
       this.writeJson(projectDir, 'board.json', board),
       this.writeJson(projectDir, 'findings.json', []),
       this.writeJson(projectDir, 'sessions.json', sessionIds),
+      this.writeExtractionStatus(projectId, this.buildExtractionStatus(sessionIds, sessionIds.length > 0 ? 'queued' : 'idle')),
       this.addToIndex(meta),
     ])
 
@@ -395,6 +468,7 @@ export class SecurityProjectService {
       meta.updatedAt = Date.now()
       await this.writeJson(projectDir, 'meta.json', meta)
       await this.updateIndex(projectId, meta)
+      await this.writeExtractionStatus(projectId, this.buildExtractionStatus(meta.sessionIds, 'queued'))
     }
   }
 
@@ -527,6 +601,30 @@ export class SecurityProjectService {
     const project = await this.getProject(projectId)
     if (!project) return
 
+    const startedAt = Date.now()
+    await this.writeExtractionStatus(projectId, this.buildExtractionStatus(project.meta.sessionIds, 'running', {
+      phase: 'extracting',
+      startedAt,
+    }))
+    const taskRecords = await Promise.all(project.meta.sessionIds.map((sessionId) => (
+      sessionTaskService.createTask({
+        sessionId,
+        type: 'project_from_session',
+        title: `整理项目发现 - ${project.meta.name}`,
+        status: 'running',
+        sourceRefs: [{ type: 'session', id: sessionId }],
+        targetRefs: [{ type: 'project', id: projectId, title: project.meta.name }],
+        events: [{
+          timestamp: new Date().toISOString(),
+          level: 'info',
+          phase: 'extracting',
+          message: '正在从会话记录和会话黑板整理项目发现',
+        }],
+      }).catch(() => null)
+    )))
+
+    try {
+
     // 读上一版节点，作为增量精炼基线 + id 复用来源。
     const prevNodes = await this.getNodes(projectId)
     const prevById = new Map(prevNodes.map((n) => [n.id, n]))
@@ -651,6 +749,54 @@ export class SecurityProjectService {
       meta.updatedAt = Date.now()
       await this.writeJson(projectDir, 'meta.json', meta)
       await this.updateIndex(projectId, meta)
+    }
+    await this.writeExtractionStatus(projectId, this.buildExtractionStatus(project.meta.sessionIds, allNodes.length > 0 ? 'done' : 'empty', {
+      phase: allNodes.length > 0 ? 'done' : 'empty',
+      startedAt,
+      nodeCount: allNodes.length,
+      findingCount: findings.length,
+    }))
+    await Promise.all(taskRecords.map((task) => task
+      ? sessionTaskService.updateTask(task.sessionId, task.id, {
+          status: allNodes.length > 0 ? 'done' : 'empty',
+          targetRefs: [{ type: 'project', id: projectId, title: project.meta.name }],
+          events: [
+            ...task.events,
+            {
+              timestamp: new Date().toISOString(),
+              level: 'info',
+              phase: allNodes.length > 0 ? 'done' : 'empty',
+              message: allNodes.length > 0
+                ? `已整理 ${allNodes.length} 个节点，${findings.length} 个发现`
+                : '本次会话整理未生成新的项目发现',
+            },
+          ],
+        }).catch(() => undefined)
+      : undefined,
+    ))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.writeExtractionStatus(projectId, this.buildExtractionStatus(project.meta.sessionIds, 'failed', {
+        phase: 'failed',
+        startedAt,
+        error: message,
+      }))
+      await Promise.all(taskRecords.map((task) => task
+        ? sessionTaskService.updateTask(task.sessionId, task.id, {
+            status: 'failed',
+            targetRefs: [{ type: 'project', id: projectId, title: project.meta.name }],
+            events: [
+              ...task.events,
+              {
+                timestamp: new Date().toISOString(),
+                level: 'error',
+                phase: 'failed',
+                message,
+              },
+            ],
+          }).catch(() => undefined)
+        : undefined,
+      ))
     }
   }
 

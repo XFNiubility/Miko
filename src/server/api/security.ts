@@ -4,8 +4,14 @@
 
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { securityProjectService } from '../services/securityProjectService.js'
+import { securityResourceService } from '../services/securityResourceService.js'
+import { resourceExtractionService } from '../services/resourceExtractionService.js'
+import { sessionService } from '../services/sessionService.js'
+import { sessionTaskService } from '../services/sessionTaskService.js'
+import type { SessionTaskEvent, SessionTaskRef, SessionTaskStatus, SessionTaskType } from '../services/sessionTaskService.js'
 import { sessionBoardService } from '../services/sessionBoardService.js'
 import type { ProjectPriority, ExploreNode } from '../services/securityProjectService.js'
+import type { SecurityResourceKind, SecurityResourceUploadFile } from '../services/securityResourceService.js'
 import type { ExplorePhase } from '../services/findingsExtractionService.js'
 
 export async function handleSecurityApi(req: Request, url: URL, _segments: string[]): Promise<Response> {
@@ -17,6 +23,47 @@ export async function handleSecurityApi(req: Request, url: URL, _segments: strin
 
     if (!sub) {
       throw ApiError.notFound('Security API root')
+    }
+
+    // /api/security/resources
+    if (sub === 'resources') {
+      const resourceId = parts[3]
+      if (req.method === 'GET' && !resourceId) {
+        return listResources()
+      }
+      if (req.method === 'POST' && !resourceId) {
+        return createResource(req)
+      }
+      if (req.method === 'POST' && resourceId === 'import' && !parts[4]) {
+        return importResource(req)
+      }
+      if (req.method === 'POST' && resourceId === 'from-session' && !parts[4]) {
+        return createResourceFromSession(req)
+      }
+      if (resourceId && parts[4] === 'extraction' && !parts[5]) {
+        if (req.method === 'GET') return getResourceExtraction(resourceId)
+        throw new ApiError(405, 'Method not allowed', 'METHOD_NOT_ALLOWED')
+      }
+      if (resourceId && parts[4] === 'extract' && !parts[5]) {
+        if (req.method === 'POST') return extractResource(resourceId)
+        throw new ApiError(405, 'Method not allowed', 'METHOD_NOT_ALLOWED')
+      }
+      if (resourceId && parts[4] === 'references') {
+        if (req.method === 'GET' && !parts[5]) return getResourceReferences(resourceId)
+        if (req.method === 'PATCH' && parts[5] && !parts[6]) return updateResourceReference(req, resourceId, parts[5])
+        if (req.method === 'POST' && parts[5] && parts[6] === 'read' && !parts[7]) return readResourceReference(resourceId, parts[5])
+        throw new ApiError(405, 'Method not allowed', 'METHOD_NOT_ALLOWED')
+      }
+      if (req.method === 'GET' && resourceId && !parts[4]) {
+        return getResource(resourceId)
+      }
+      if (req.method === 'PATCH' && resourceId && !parts[4]) {
+        return updateResource(req, resourceId)
+      }
+      if (req.method === 'DELETE' && resourceId && !parts[4]) {
+        return deleteResource(resourceId)
+      }
+      throw new ApiError(405, 'Method not allowed', 'METHOD_NOT_ALLOWED')
     }
 
     // /api/security/projects
@@ -31,6 +78,9 @@ export async function handleSecurityApi(req: Request, url: URL, _segments: strin
       }
       if (req.method === 'GET' && projectId && !parts[4]) {
         return getProject(projectId)
+      }
+      if (req.method === 'GET' && parts[4] === 'extraction-status' && !parts[5] && projectId) {
+        return getProjectExtractionStatus(projectId)
       }
       if (req.method === 'PATCH' && projectId) {
         return updateProject(req, projectId)
@@ -78,6 +128,34 @@ export async function handleSecurityApi(req: Request, url: URL, _segments: strin
       if (req.method === 'POST' && parts[4] === 'board' && parts[5] === 'hints') {
         return await addSessionHint(req, sessionId)
       }
+      if (parts[4] === 'resources') {
+        if (req.method === 'GET' && !parts[5]) {
+          return await getSessionResources(sessionId)
+        }
+        if (req.method === 'PUT' && !parts[5]) {
+          return await setSessionResources(req, sessionId)
+        }
+        if (req.method === 'POST' && !parts[5]) {
+          return await addSessionResource(req, sessionId)
+        }
+        if (req.method === 'DELETE' && parts[5]) {
+          return await removeSessionResource(sessionId, parts[5])
+        }
+      }
+      if (parts[4] === 'tasks') {
+        if (req.method === 'GET' && !parts[5]) {
+          return await listSessionTasks(sessionId)
+        }
+        if (req.method === 'POST' && !parts[5]) {
+          return await createSessionTask(req, sessionId)
+        }
+        if (req.method === 'GET' && parts[5] && !parts[6]) {
+          return await getSessionTask(sessionId, parts[5])
+        }
+        if (req.method === 'PATCH' && parts[5] && !parts[6]) {
+          return await updateSessionTask(req, sessionId, parts[5])
+        }
+      }
       throw new ApiError(405, 'Method not allowed', 'METHOD_NOT_ALLOWED')
     }
 
@@ -112,6 +190,317 @@ async function listProjects(): Promise<Response> {
 async function listCategories(): Promise<Response> {
   const categories = await securityProjectService.getCategories()
   return Response.json({ categories })
+}
+
+async function listResources(): Promise<Response> {
+  const resources = await securityResourceService.listResources()
+  return Response.json({ resources })
+}
+
+async function queueResourceExtraction(resourceId: string): Promise<void> {
+  await resourceExtractionService.queueExtraction(resourceId).catch(() => undefined)
+  void resourceExtractionService.extract(resourceId).catch(() => undefined)
+}
+
+async function getResource(resourceId: string): Promise<Response> {
+  const resource = await securityResourceService.getResource(resourceId)
+  if (!resource) {
+    throw ApiError.notFound('Resource not found')
+  }
+  return Response.json({ resource })
+}
+
+async function createResource(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  const resource = await securityResourceService.createResource({
+    title: typeof body.title === 'string' ? body.title : '',
+    kind: typeof body.kind === 'string' ? body.kind as SecurityResourceKind : undefined,
+    tags: Array.isArray(body.tags) ? body.tags as string[] : undefined,
+    summary: typeof body.summary === 'string' ? body.summary : undefined,
+    content: typeof body.content === 'string' ? body.content : undefined,
+    projectIds: Array.isArray(body.projectIds) ? body.projectIds as string[] : undefined,
+  })
+  await queueResourceExtraction(resource.meta.id)
+  return Response.json({ resource }, { status: 201 })
+}
+
+async function importResource(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  if (!Array.isArray(body.paths) && !Array.isArray(body.files)) {
+    throw ApiError.badRequest('paths or files is required')
+  }
+  const resource = await securityResourceService.importFiles({
+    paths: Array.isArray(body.paths) ? body.paths.filter((item): item is string => typeof item === 'string') : undefined,
+    files: Array.isArray(body.files) ? body.files.filter((item): item is SecurityResourceUploadFile => {
+      return Boolean(item)
+        && typeof item === 'object'
+        && typeof (item as SecurityResourceUploadFile).name === 'string'
+        && typeof (item as SecurityResourceUploadFile).dataBase64 === 'string'
+    }) : undefined,
+    kind: typeof body.kind === 'string' ? body.kind as SecurityResourceKind : undefined,
+    tags: Array.isArray(body.tags) ? body.tags as string[] : undefined,
+    summary: typeof body.summary === 'string' ? body.summary : undefined,
+    projectIds: Array.isArray(body.projectIds) ? body.projectIds as string[] : undefined,
+  })
+  await queueResourceExtraction(resource.meta.id)
+  return Response.json({ resource }, { status: 201 })
+}
+
+async function createResourceFromSession(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  if (!Array.isArray(body.sessionIds)) {
+    throw ApiError.badRequest('sessionIds is required')
+  }
+  const resource = await securityResourceService.createResourceFromSessions({
+    sessionIds: body.sessionIds.filter((item): item is string => typeof item === 'string'),
+    title: typeof body.title === 'string' ? body.title : undefined,
+    kind: typeof body.kind === 'string' ? body.kind as SecurityResourceKind : undefined,
+    tags: Array.isArray(body.tags) ? body.tags as string[] : undefined,
+    summary: typeof body.summary === 'string' ? body.summary : undefined,
+    projectIds: Array.isArray(body.projectIds) ? body.projectIds as string[] : undefined,
+  })
+  await queueResourceExtraction(resource.meta.id)
+  return Response.json({ resource }, { status: 201 })
+}
+
+async function updateResource(req: Request, resourceId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  const resource = await securityResourceService.updateResource(resourceId, {
+    title: typeof body.title === 'string' ? body.title : undefined,
+    kind: typeof body.kind === 'string' ? body.kind as SecurityResourceKind : undefined,
+    tags: Array.isArray(body.tags) ? body.tags as string[] : undefined,
+    summary: typeof body.summary === 'string' ? body.summary : undefined,
+    content: typeof body.content === 'string' ? body.content : undefined,
+    projectIds: Array.isArray(body.projectIds) ? body.projectIds as string[] : undefined,
+  })
+  await queueResourceExtraction(resource.meta.id)
+  return Response.json({ resource })
+}
+
+async function deleteResource(resourceId: string): Promise<Response> {
+  await securityResourceService.deleteResource(resourceId)
+  return Response.json({ ok: true })
+}
+
+async function getResourceExtraction(resourceId: string): Promise<Response> {
+  const extraction = await resourceExtractionService.getExtraction(resourceId)
+  return Response.json({ extraction })
+}
+
+async function extractResource(resourceId: string): Promise<Response> {
+  const extraction = await resourceExtractionService.extract(resourceId)
+  return Response.json({ extraction })
+}
+
+async function getResourceReferences(resourceId: string): Promise<Response> {
+  const references = await resourceExtractionService.getReferences(resourceId)
+  return Response.json({ references })
+}
+
+async function updateResourceReference(req: Request, resourceId: string, referenceId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  const permissionStatus = typeof body.permissionStatus === 'string'
+    && ['not_required', 'pending', 'allowed', 'denied', 'failed'].includes(body.permissionStatus)
+    ? body.permissionStatus as 'not_required' | 'pending' | 'allowed' | 'denied' | 'failed'
+    : undefined
+  const readPolicy = body.readPolicy && typeof body.readPolicy === 'object'
+    ? body.readPolicy as { mode: 'file' | 'list_only' | 'list_and_selected_files' | 'fetch_url' | 'clone_shallow'; maxDepth?: number; maxFiles?: number; maxBytesPerFile?: number }
+    : undefined
+  const reference = await resourceExtractionService.updateReferencePermission(resourceId, referenceId, {
+    permissionStatus,
+    readPolicy,
+  })
+  return Response.json({ reference })
+}
+
+async function readResourceReference(resourceId: string, referenceId: string): Promise<Response> {
+  const result = await resourceExtractionService.readReference(resourceId, referenceId)
+  return Response.json(result)
+}
+
+async function getSessionResources(sessionId: string): Promise<Response> {
+  const resourceIds = await sessionService.getLinkedSecurityResourceIds(sessionId)
+  const resources = await Promise.all(resourceIds.map((id) => securityResourceService.getResource(id)))
+  return Response.json({
+    resourceIds,
+    resources: resources.filter((resource): resource is NonNullable<typeof resource> => Boolean(resource)),
+  })
+}
+
+async function setSessionResources(req: Request, sessionId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  if (!Array.isArray(body.resourceIds)) {
+    throw ApiError.badRequest('resourceIds is required')
+  }
+  const resourceIds = await validateResourceIds(body.resourceIds)
+  const linkedResourceIds = await sessionService.setLinkedSecurityResourceIds(sessionId, resourceIds)
+  const resources = await Promise.all(linkedResourceIds.map((id) => securityResourceService.getResource(id)))
+  return Response.json({
+    resourceIds: linkedResourceIds,
+    resources: resources.filter((resource): resource is NonNullable<typeof resource> => Boolean(resource)),
+  })
+}
+
+async function addSessionResource(req: Request, sessionId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+  if (typeof body.resourceId !== 'string') {
+    throw ApiError.badRequest('resourceId is required')
+  }
+  const [resourceId] = await validateResourceIds([body.resourceId])
+  const current = await sessionService.getLinkedSecurityResourceIds(sessionId)
+  const next = current.includes(resourceId) ? current : [...current, resourceId]
+  const linkedResourceIds = await sessionService.setLinkedSecurityResourceIds(sessionId, next)
+  const resources = await Promise.all(linkedResourceIds.map((id) => securityResourceService.getResource(id)))
+  return Response.json({
+    resourceIds: linkedResourceIds,
+    resources: resources.filter((resource): resource is NonNullable<typeof resource> => Boolean(resource)),
+  })
+}
+
+async function removeSessionResource(sessionId: string, resourceId: string): Promise<Response> {
+  const current = await sessionService.getLinkedSecurityResourceIds(sessionId)
+  const linkedResourceIds = await sessionService.setLinkedSecurityResourceIds(
+    sessionId,
+    current.filter((id) => id !== resourceId),
+  )
+  const resources = await Promise.all(linkedResourceIds.map((id) => securityResourceService.getResource(id)))
+  return Response.json({
+    resourceIds: linkedResourceIds,
+    resources: resources.filter((resource): resource is NonNullable<typeof resource> => Boolean(resource)),
+  })
+}
+
+const SESSION_TASK_TYPES: SessionTaskType[] = [
+  'resource_from_session',
+  'project_from_session',
+  'recon',
+  'skill_create',
+  'skill_edit',
+  'mcp_install',
+  'marketplace_install',
+  'config_fix',
+]
+
+const SESSION_TASK_CREATE_STATUSES: SessionTaskStatus[] = ['queued', 'running']
+const SESSION_TASK_CLIENT_PATCH_STATUSES: SessionTaskStatus[] = ['queued', 'running', 'waiting_for_permission', 'failed']
+
+function isSessionTaskType(value: unknown): value is SessionTaskType {
+  return typeof value === 'string' && SESSION_TASK_TYPES.includes(value as SessionTaskType)
+}
+
+function isSessionTaskCreateStatus(value: unknown): value is SessionTaskStatus {
+  return typeof value === 'string' && SESSION_TASK_CREATE_STATUSES.includes(value as SessionTaskStatus)
+}
+
+function isSessionTaskClientPatchStatus(value: unknown): value is SessionTaskStatus {
+  return typeof value === 'string' && SESSION_TASK_CLIENT_PATCH_STATUSES.includes(value as SessionTaskStatus)
+}
+
+function jsonArray<T>(value: unknown): T[] | undefined {
+  return Array.isArray(value) ? value as T[] : undefined
+}
+
+async function listSessionTasks(sessionId: string): Promise<Response> {
+  const tasks = await sessionTaskService.listTasks(sessionId)
+  return Response.json({ tasks })
+}
+
+async function createSessionTask(req: Request, sessionId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+
+  if (!isSessionTaskType(body.type)) {
+    throw ApiError.badRequest('Invalid task type')
+  }
+  if (typeof body.title !== 'string' || !body.title.trim()) {
+    throw ApiError.badRequest('title is required')
+  }
+  if (body.status !== undefined && !isSessionTaskCreateStatus(body.status)) {
+    throw ApiError.badRequest('Client-created tasks can only start as queued or running')
+  }
+
+  const task = await sessionTaskService.createTask({
+    sessionId,
+    type: body.type,
+    title: body.title,
+    status: body.status,
+    sourceRefs: jsonArray<SessionTaskRef>(body.sourceRefs),
+    targetRefs: jsonArray<SessionTaskRef>(body.targetRefs),
+    events: jsonArray<SessionTaskEvent>(body.events),
+  })
+  return Response.json({ task }, { status: 201 })
+}
+
+async function getSessionTask(sessionId: string, taskId: string): Promise<Response> {
+  const task = await sessionTaskService.getTask(sessionId, taskId)
+  if (!task) throw ApiError.notFound('Session task not found')
+  return Response.json({ task })
+}
+
+async function updateSessionTask(req: Request, sessionId: string, taskId: string): Promise<Response> {
+  const body = await req.json().catch(() => {
+    throw ApiError.badRequest('Invalid JSON body')
+  }) as Record<string, unknown>
+
+  const patch: {
+    status?: SessionTaskStatus
+    title?: string
+    sourceRefs?: SessionTaskRef[]
+    targetRefs?: SessionTaskRef[]
+  } = {}
+
+  if (body.status !== undefined) {
+    if (!isSessionTaskClientPatchStatus(body.status)) {
+      throw ApiError.badRequest('Client updates cannot mark tasks done or empty')
+    }
+    patch.status = body.status
+  }
+  if (typeof body.title === 'string') patch.title = body.title
+  if (Array.isArray(body.sourceRefs)) patch.sourceRefs = body.sourceRefs as SessionTaskRef[]
+  if (Array.isArray(body.targetRefs)) patch.targetRefs = body.targetRefs as SessionTaskRef[]
+
+  let task = Object.keys(patch).length > 0
+    ? await sessionTaskService.updateTask(sessionId, taskId, patch)
+    : await sessionTaskService.getTask(sessionId, taskId)
+  if (!task) throw ApiError.notFound('Session task not found')
+
+  if (body.event !== undefined) {
+    if (!body.event || typeof body.event !== 'object') {
+      throw ApiError.badRequest('Invalid task event')
+    }
+    task = await sessionTaskService.appendEvent(sessionId, taskId, body.event as SessionTaskEvent)
+  }
+  return Response.json({ task })
+}
+
+async function validateResourceIds(rawIds: unknown[]): Promise<string[]> {
+  const resourceIds = rawIds
+    .filter((id): id is string => typeof id === 'string')
+    .map((id) => id.trim())
+    .filter(Boolean)
+  const unique = [...new Set(resourceIds)]
+  for (const id of unique) {
+    const resource = await securityResourceService.getResource(id)
+    if (!resource) {
+      throw ApiError.badRequest(`resource not found: ${id}`)
+    }
+  }
+  return unique
 }
 
 async function addCategory(req: Request): Promise<Response> {
@@ -210,7 +599,13 @@ async function getProject(projectId: string): Promise<Response> {
   const sessionSummaries = await securityProjectService.getSessionSummaries(project.meta.sessionIds)
   const nodes = await securityProjectService.getNodes(projectId)
   const hints = await securityProjectService.getHints(projectId)
-  return Response.json({ project, sessionSummaries, nodes, hints })
+  const extractionStatus = await securityProjectService.getExtractionStatus(projectId)
+  return Response.json({ project, sessionSummaries, nodes, hints, extractionStatus })
+}
+
+async function getProjectExtractionStatus(projectId: string): Promise<Response> {
+  const extractionStatus = await securityProjectService.getExtractionStatus(projectId)
+  return Response.json({ extractionStatus })
 }
 
 async function addHint(req: Request, projectId: string): Promise<Response> {

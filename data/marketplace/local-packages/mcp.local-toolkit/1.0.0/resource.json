@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "mcp.local-toolkit",
+  "type": "mcp",
+  "name": "local-toolkit",
+  "version": "1.0.0",
+  "category": "diagnostics",
+  "description": "Marketplace MCP package that installs two local stdio servers to validate multi-server merge behavior.",
+  "permissions": ["stdio", "local-process", "environment"]
+}

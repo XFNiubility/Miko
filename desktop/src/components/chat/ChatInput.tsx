@@ -7,6 +7,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
 import { useTeamStore } from '../../stores/teamStore'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { useSecurityStore } from '../../stores/securityStore'
 import {
   formatWorkspaceReferencePrompt,
   useWorkspaceChatContextStore,
@@ -43,6 +44,7 @@ import {
 } from '../../lib/composerAttachments'
 import { useComposerFileDrop } from './useComposerFileDrop'
 import { shouldSubmitOnEnter } from './sendShortcut'
+import type { SessionTask, SessionTaskStatus, SessionTaskType } from '../../api/security'
 
 type GitInfo = SessionGitInfo
 
@@ -54,6 +56,8 @@ type ChatInputProps = {
 }
 
 const EMPTY_WORKSPACE_REFERENCES: WorkspaceChatReference[] = []
+const EMPTY_SECURITY_RESOURCE_IDS: string[] = []
+const EMPTY_SESSION_TASKS: SessionTask[] = []
 
 function workspaceReferenceToAttachment(reference: WorkspaceChatReference): Attachment {
   return {
@@ -1034,6 +1038,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             )
           )}
 
+          {!isMemberSession && activeTabId && (
+            <SessionTaskCards sessionId={activeTabId} compact={useCompactControls} />
+          )}
+
           {isHeroComposer ? (
             <div className="flex items-start gap-3">
               <textarea
@@ -1114,6 +1122,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
 
                   <PermissionModeSelector compact={useCompactControls} />
                   <SecurityModeSelector compact={useCompactControls} />
+                  <SessionResourceLinkButton sessionId={activeTabId} compact={useCompactControls} />
                 </>
               )}
             </div>
@@ -1231,6 +1240,238 @@ function AgentSessionBanner() {
       >
         退出 ✕
       </button>
+    </div>
+  )
+}
+
+function sessionTaskTypeLabel(type: SessionTaskType): string {
+  switch (type) {
+    case 'resource_from_session':
+      return '资源提取'
+    case 'project_from_session':
+      return '项目整理'
+    case 'recon':
+      return '信息收集'
+    case 'skill_create':
+      return '新建 Skill'
+    case 'skill_edit':
+      return '编辑 Skill'
+    case 'mcp_install':
+      return 'MCP 配置'
+    case 'marketplace_install':
+      return '资源安装'
+    case 'config_fix':
+      return '配置修复'
+    default:
+      return 'Agent 任务'
+  }
+}
+
+function sessionTaskStatusLabel(status: SessionTaskStatus): string {
+  switch (status) {
+    case 'queued':
+      return '排队中'
+    case 'running':
+      return '进行中'
+    case 'waiting_for_permission':
+      return '等待授权'
+    case 'done':
+      return '已完成'
+    case 'empty':
+      return '无结果'
+    case 'failed':
+      return '失败'
+    default:
+      return status
+  }
+}
+
+function sessionTaskStatusClass(status: SessionTaskStatus): string {
+  switch (status) {
+    case 'running':
+      return 'border-[var(--color-brand)]/30 bg-[var(--color-brand)]/10 text-[var(--color-brand)]'
+    case 'waiting_for_permission':
+      return 'border-[var(--color-warning)]/30 bg-[var(--color-warning-container)] text-[var(--color-on-warning-container)]'
+    case 'done':
+      return 'border-[var(--color-success)]/30 bg-[var(--color-success-container)] text-[var(--color-on-success-container)]'
+    case 'failed':
+      return 'border-[var(--color-error)]/30 bg-[var(--color-error-container)] text-[var(--color-on-error-container)]'
+    default:
+      return 'border-[var(--color-border)] bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)]'
+  }
+}
+
+function SessionTaskCards({
+  sessionId,
+  compact,
+}: {
+  sessionId: string
+  compact: boolean
+}) {
+  const tasks = useSecurityStore((state) => state.sessionTasks[sessionId] ?? EMPTY_SESSION_TASKS)
+  const fetchSessionTasks = useSecurityStore((state) => state.fetchSessionTasks)
+  const visibleTasks = tasks.slice(0, 4)
+  const hasActiveTasks = tasks.some((task) => (
+    task.status === 'queued' || task.status === 'running' || task.status === 'waiting_for_permission'
+  ))
+
+  useEffect(() => {
+    void fetchSessionTasks(sessionId)
+  }, [fetchSessionTasks, sessionId])
+
+  useEffect(() => {
+    if (!hasActiveTasks) return
+    const timer = window.setInterval(() => {
+      void fetchSessionTasks(sessionId)
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [fetchSessionTasks, hasActiveTasks, sessionId])
+
+  if (visibleTasks.length === 0) return null
+
+  return (
+    <div className={compact ? 'px-1 pb-2' : 'px-3 pb-3'}>
+      <div className="flex max-h-[128px] flex-col gap-1.5 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-1.5">
+        {visibleTasks.map((task) => {
+          const latestEvent = task.events[task.events.length - 1]
+          return (
+            <div
+              key={task.id}
+              className="flex min-w-0 items-start gap-2 rounded-md bg-[var(--color-surface-container-lowest)] px-2.5 py-2"
+            >
+              <span className="material-symbols-outlined mt-0.5 text-[16px] text-[var(--color-text-tertiary)]">
+                checklist
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="shrink-0 text-[11px] font-medium text-[var(--color-text-tertiary)]">
+                    {sessionTaskTypeLabel(task.type)}
+                  </span>
+                  <span className="truncate text-xs font-semibold text-[var(--color-text-primary)]">
+                    {task.title}
+                  </span>
+                </div>
+                {latestEvent && (
+                  <div className="mt-0.5 truncate text-[11px] text-[var(--color-text-tertiary)]">
+                    {latestEvent.message}
+                  </div>
+                )}
+              </div>
+              {task.targetRefs.length > 0 && (
+                <span className="mt-0.5 shrink-0 text-[11px] text-[var(--color-text-tertiary)]">
+                  {task.targetRefs.length} 项
+                </span>
+              )}
+              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${sessionTaskStatusClass(task.status)}`}>
+                {sessionTaskStatusLabel(task.status)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function SessionResourceLinkButton({
+  sessionId,
+  compact,
+}: {
+  sessionId: string | null
+  compact: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const resources = useSecurityStore((state) => state.resources)
+  const linkedIds = useSecurityStore((state) => sessionId ? state.sessionResourceIds[sessionId] ?? EMPTY_SECURITY_RESOURCE_IDS : EMPTY_SECURITY_RESOURCE_IDS)
+  const isMutating = useSecurityStore((state) => state.isMutating)
+  const fetchResources = useSecurityStore((state) => state.fetchResources)
+  const fetchSessionResources = useSecurityStore((state) => state.fetchSessionResources)
+  const setSessionResources = useSecurityStore((state) => state.setSessionResources)
+
+  useEffect(() => {
+    if (!sessionId) return
+    void fetchSessionResources(sessionId)
+  }, [fetchSessionResources, sessionId])
+
+  if (!sessionId) return null
+
+  async function toggleResource(resourceId: string) {
+    if (!sessionId) return
+    const next = linkedIds.includes(resourceId)
+      ? linkedIds.filter((id) => id !== resourceId)
+      : [...linkedIds, resourceId]
+    await setSessionResources(sessionId, next)
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((value) => !value)
+          void fetchResources()
+          void fetchSessionResources(sessionId)
+        }}
+        className={`inline-flex items-center gap-1.5 rounded-[var(--radius-md)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] ${
+          compact ? 'h-8 px-2 text-xs' : 'px-2 py-1.5 text-xs'
+        }`}
+        title="关联资源"
+      >
+        <span className="material-symbols-outlined text-[18px]">docs</span>
+        {!compact && <span>资源</span>}
+        {linkedIds.length > 0 && (
+          <span className="rounded-full bg-[var(--color-brand)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+            {linkedIds.length}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-50 mb-2 w-[320px] overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]">
+          <div className="border-b border-[var(--color-border)] px-3 py-2">
+            <div className="text-sm font-semibold text-[var(--color-text-primary)]">关联资源</div>
+            <div className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">当前会话可读取这些上下文资料</div>
+          </div>
+          <div className="max-h-[280px] overflow-y-auto p-1.5">
+            {resources.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs leading-5 text-[var(--color-text-tertiary)]">
+                暂无资源，可在安全平台的资源页新增。
+              </div>
+            ) : (
+              resources.map((resource) => {
+                const checked = linkedIds.includes(resource.id)
+                return (
+                  <button
+                    key={resource.id}
+                    type="button"
+                    disabled={isMutating}
+                    onClick={() => void toggleResource(resource.id)}
+                    className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                      checked ? 'bg-[var(--color-brand)]/10' : 'hover:bg-[var(--color-surface-hover)]'
+                    } disabled:opacity-60`}
+                  >
+                    <span
+                      className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                        checked
+                          ? 'border-[var(--color-brand)] bg-[var(--color-brand)] text-white'
+                          : 'border-[var(--color-border)]'
+                      }`}
+                    >
+                      {checked && <span className="material-symbols-outlined text-[13px]">check</span>}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-[var(--color-text-primary)]">{resource.title}</span>
+                      {resource.summary && (
+                        <span className="mt-0.5 line-clamp-2 block text-xs leading-4 text-[var(--color-text-tertiary)]">{resource.summary}</span>
+                      )}
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

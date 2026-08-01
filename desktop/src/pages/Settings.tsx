@@ -11,6 +11,7 @@ import { Textarea } from '../components/shared/Textarea'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
 import { settingsApi } from '../api/settings'
+import { configApi } from '../api/config'
 import type { ThemeMode, UpdateProxyMode, NetworkProxyMode, WebSearchMode, AppMode, ChatSendBehavior } from '../types/settings'
 import type { Locale } from '../i18n'
 import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat, ProviderAuthStrategy } from '../types/provider'
@@ -27,6 +28,7 @@ import { SkillDetail } from '../components/skills/SkillDetail'
 import { usePluginStore } from '../stores/pluginStore'
 import { PluginList } from '../components/plugins/PluginList'
 import { PluginDetail } from '../components/plugins/PluginDetail'
+import { MarketplaceSettings } from '../components/marketplace/MarketplaceSettings'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
 import { mcpApi, type McpScanResult } from '../api/mcp'
@@ -169,6 +171,7 @@ export function Settings() {
             <TabButton icon="build" label="工具" active={activeTab === 'tools'} onClick={() => setActiveTab('tools')} />
             <TabButton icon="history_edu" label={t('settings.tab.memory')} active={activeTab === 'memory'} onClick={() => setActiveTab('memory')} />
             <TabButton icon="extension" label={t('settings.tab.plugins')} active={activeTab === 'plugins'} onClick={() => setActiveTab('plugins')} />
+            <TabButton icon="storefront" label={t('settings.tab.marketplace')} active={activeTab === 'marketplace'} onClick={() => setActiveTab('marketplace')} />
             <TabButton icon="mouse" label={t('settings.tab.computerUse')} active={activeTab === 'computerUse'} onClick={() => setActiveTab('computerUse')} />
             <TabButton icon="monitoring" label={t('settings.tab.activity')} active={activeTab === 'activity'} onClick={() => setActiveTab('activity')} />
             <TabButton icon="monitor_heart" label={t('settings.tab.diagnostics')} active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} />
@@ -192,6 +195,7 @@ export function Settings() {
           {activeTab === 'tools' && <ToolsSettings />}
           {activeTab === 'memory' && <MemorySettings />}
           {activeTab === 'plugins' && <PluginSettings />}
+          {activeTab === 'marketplace' && <MarketplaceSettings />}
           {activeTab === 'computerUse' && <ComputerUseSettings />}
           {activeTab === 'diagnostics' && <DiagnosticsSettings />}
           {activeTab === 'about' && <AboutSettings />}
@@ -1457,6 +1461,8 @@ function GeneralSettings() {
     setNetwork,
     responseLanguage,
     setResponseLanguage,
+    defaultWorkspaceDir,
+    setDefaultWorkspaceDir,
     appMode,
     appModeRequiresRestart,
     fetchAppMode,
@@ -1483,6 +1489,10 @@ function GeneralSettings() {
   const [pendingMode, setPendingMode] = useState<AppMode | null>(null)
   const [pendingPortableDir, setPendingPortableDir] = useState<string | null>(null)
   const [portableDirDraft, setPortableDirDraft] = useState('')
+  const [defaultWorkspaceDraft, setDefaultWorkspaceDraft] = useState('')
+  const [effectiveWorkspaceDir, setEffectiveWorkspaceDir] = useState('')
+  const [workspaceActionRunning, setWorkspaceActionRunning] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [modeActionRunning, setModeActionRunning] = useState(false)
   const [modeError, setModeError] = useState<string | null>(null)
   const [uiZoomDraft, setUiZoomDraft] = useState(uiZoom)
@@ -1495,6 +1505,7 @@ function GeneralSettings() {
   const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
   const configDirSource = appMode.configDirSource ?? (appMode.mode === 'portable' ? 'portable' : 'system')
   const isEnvironmentConfigDir = configDirSource === 'environment'
+  const workspaceDirty = defaultWorkspaceDraft.trim() !== defaultWorkspaceDir
 
   useEffect(() => {
     setWebSearchDraft(webSearch)
@@ -1555,6 +1566,25 @@ function GeneralSettings() {
   useEffect(() => {
     setPortableDirDraft(appMode.portableDir ?? appMode.defaultPortableDir ?? '')
   }, [appMode.defaultPortableDir, appMode.portableDir])
+
+  useEffect(() => {
+    setDefaultWorkspaceDraft(defaultWorkspaceDir)
+    setWorkspaceError(null)
+  }, [defaultWorkspaceDir])
+
+  useEffect(() => {
+    let cancelled = false
+    configApi.getPaths()
+      .then((paths) => {
+        if (!cancelled) setEffectiveWorkspaceDir(paths.workspaceDir)
+      })
+      .catch(() => {
+        if (!cancelled) setEffectiveWorkspaceDir('')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [defaultWorkspaceDir])
 
   const LANGUAGES: Array<{ value: Locale; label: string }> = [
     { value: 'en', label: 'English' },
@@ -1788,6 +1818,61 @@ function GeneralSettings() {
       }
     } catch {
       setModeError(t('settings.general.storagePickerError'))
+    }
+  }
+
+  const refreshEffectiveWorkspaceDir = async () => {
+    const paths = await configApi.getPaths()
+    setEffectiveWorkspaceDir(paths.workspaceDir)
+  }
+
+  const openDefaultWorkspacePicker = async () => {
+    setWorkspaceError(null)
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: t('settings.general.defaultWorkspaceChooseTitle'),
+      })
+      if (typeof selected === 'string') {
+        setDefaultWorkspaceDraft(selected)
+      }
+    } catch {
+      setWorkspaceError(t('settings.general.storagePickerError'))
+    }
+  }
+
+  const saveDefaultWorkspace = async () => {
+    setWorkspaceActionRunning(true)
+    setWorkspaceError(null)
+    try {
+      await setDefaultWorkspaceDir(defaultWorkspaceDraft.trim() || null)
+      await refreshEffectiveWorkspaceDir()
+      addToast({ type: 'success', message: t('settings.general.defaultWorkspaceSaved') })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.general.defaultWorkspaceSaveFailed')
+      setWorkspaceError(message)
+      addToast({ type: 'error', message })
+    } finally {
+      setWorkspaceActionRunning(false)
+    }
+  }
+
+  const resetDefaultWorkspace = async () => {
+    setWorkspaceActionRunning(true)
+    setWorkspaceError(null)
+    try {
+      await setDefaultWorkspaceDir(null)
+      setDefaultWorkspaceDraft('')
+      await refreshEffectiveWorkspaceDir()
+      addToast({ type: 'success', message: t('settings.general.defaultWorkspaceReset') })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.general.defaultWorkspaceSaveFailed')
+      setWorkspaceError(message)
+      addToast({ type: 'error', message })
+    } finally {
+      setWorkspaceActionRunning(false)
     }
   }
 
@@ -2530,6 +2615,78 @@ function GeneralSettings() {
                 <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">{activeConfigDir}</div>
               </div>
             )}
+
+            <div className="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
+              <div className="mb-3 flex items-start gap-3">
+                <span className="material-symbols-outlined mt-0.5 text-[20px] text-[var(--color-text-secondary)]">folder_open</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.general.defaultWorkspaceTitle')}</div>
+                  <div className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{t('settings.general.defaultWorkspaceDescription')}</div>
+                </div>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <div className="min-w-0 flex-1">
+                  <Input
+                    id="default-workspace-dir"
+                    label={t('settings.general.defaultWorkspaceDirLabel')}
+                    value={defaultWorkspaceDraft}
+                    placeholder={effectiveWorkspaceDir || t('settings.general.defaultWorkspaceDirPlaceholder')}
+                    onChange={(event) => {
+                      setDefaultWorkspaceDraft(event.target.value)
+                      setWorkspaceError(null)
+                    }}
+                    className="w-full font-mono text-xs"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-10 flex-shrink-0 px-3 whitespace-nowrap"
+                  onClick={() => void openDefaultWorkspacePicker()}
+                  disabled={workspaceActionRunning}
+                >
+                  {t('settings.general.storageChooseDir')}
+                </Button>
+              </div>
+
+              <div className="mt-3 rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">{t('settings.general.defaultWorkspaceEffectiveDir')}</div>
+                <div className="mt-1 break-all font-mono text-xs text-[var(--color-text-secondary)]">
+                  {effectiveWorkspaceDir || t('settings.general.defaultWorkspaceUnknown')}
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  className="text-xs font-medium text-[var(--color-brand)] hover:underline disabled:cursor-not-allowed disabled:text-[var(--color-text-tertiary)] disabled:no-underline"
+                  disabled={workspaceActionRunning || !defaultWorkspaceDir}
+                  onClick={() => void resetDefaultWorkspace()}
+                >
+                  {t('settings.general.defaultWorkspaceUseSystem')}
+                </button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={workspaceActionRunning || !workspaceDirty}
+                  onClick={() => void saveDefaultWorkspace()}
+                >
+                  {t('settings.general.defaultWorkspaceSave')}
+                </Button>
+              </div>
+
+              <div className="mt-3 text-xs leading-5 text-[var(--color-text-tertiary)]">
+                {t('settings.general.defaultWorkspaceHint')}
+              </div>
+
+              {workspaceError && (
+                <div className="mt-3 text-xs text-[var(--color-error)]">
+                  {workspaceError}
+                </div>
+              )}
+            </div>
 
             {isEnvironmentConfigDir && (
               <div className="mt-3 rounded-lg border border-[var(--color-warning)] bg-[var(--color-warning)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
@@ -3856,7 +4013,7 @@ function SkillSettings() {
         )}
       </div>
 
-      <SkillList skillsDir={skillsPath || defaultSkillsPath} />
+      <SkillList />
     </div>
   )
 }

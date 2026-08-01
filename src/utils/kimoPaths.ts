@@ -1,14 +1,16 @@
 /**
  * kimo Paths — 中心路径模块
  *
- * 所有配置和数据的「唯一真相源」。
- * 原则：无用户级全局目录，一切从工具自身的 data/ 目录读取。
+ * 所有用户数据的「唯一真相源」。
+ * 原则：data/ 是用户持久数据根；官方内置资源走 bundled-data/，缓存/运行时可走独立缓存根。
  *
  * 路径优先级：
  *   1. setDataDir(dir) 显式设置
- *   2. KIMO_DATA_DIR 环境变量
- *   3. exe 所在目录/data（生产）
- *   4. cwd/data（开发回退）
+ *   2. KIMO_DATA_ROOT 环境变量（用户数据根）
+ *   3. KIMO_DATA_DIR 环境变量（legacy，自动追加 /data）
+ *   4. CLAUDE_CONFIG_DIR 环境变量（legacy）
+ *   5. exe 所在目录/data（生产兜底）
+ *   6. cwd/data（开发回退）
  *
  * data/ 目录结构：
  *   skills/          技能
@@ -25,7 +27,7 @@
  *   keybindings.json 快捷键
  *   projects/        会话历史
  *   plugins/         插件
- *   cache/           缓存
+ *   cache/           缓存（legacy；新代码优先 getCacheRootDir()/cache）
  *   history.jsonl    全局历史
  *   plans/           计划文件
  *   file-history/    文件编辑历史
@@ -40,7 +42,9 @@
  *   telemetry/       遥测（可选）
  */
 
-import { dirname, join } from 'path'
+import { existsSync, readFileSync } from 'fs'
+import { homedir } from 'os'
+import { dirname, isAbsolute, join, normalize, resolve } from 'path'
 import { isInBundledMode } from './bundledMode.js'
 
 // ─── data/ 根目录 ─────────────────────────────────────────────────────
@@ -49,6 +53,10 @@ let _dataDir: string | null = null
 
 export function setDataDir(dir: string): void {
   _dataDir = dir
+}
+
+export function resetDataDirForTests(): void {
+  _dataDir = null
 }
 
 /**
@@ -110,6 +118,130 @@ export function getDataDirSource(): string {
   return 'cwd/data(dev)'
 }
 
+// ─── 官方内置资源 / 缓存 / 工作区根 ────────────────────────────────────
+
+export function getBundledDataDir(): string {
+  const envDir = process.env.KIMO_BUNDLED_DATA_ROOT
+  if (envDir && envDir.trim()) return envDir.trim()
+
+  if (isInBundledMode()) {
+    try {
+      return join(dirname(process.execPath), 'bundled-data')
+    } catch {
+      // ignore，落到开发回退
+    }
+  }
+
+  return join(process.cwd(), 'bundled-data')
+}
+
+function getBundledSubDir(name: string, envName: string, userFallback: string): string {
+  const envDir = process.env[envName]
+  if (envDir && envDir.trim()) return envDir.trim()
+
+  const bundledRoot = process.env.KIMO_BUNDLED_DATA_ROOT
+  if (bundledRoot && bundledRoot.trim()) {
+    const candidate = join(bundledRoot.trim(), name)
+    return existsSync(candidate) ? candidate : userFallback
+  }
+
+  // 开发态第一阶段不强制搬目录，继续回退到当前 data/<resource>。
+  if (!isInBundledMode()) return userFallback
+
+  const candidate = join(getBundledDataDir(), name)
+  return existsSync(candidate) ? candidate : userFallback
+}
+
+export function getBuiltinSkillsDir(): string {
+  return getBundledSubDir('skills', 'KIMO_BUILTIN_SKILLS_DIR', getSkillsDir())
+}
+
+export function getBuiltinAgentsDir(): string {
+  return getBundledSubDir('agents', 'KIMO_BUILTIN_AGENTS_DIR', getAgentsDir())
+}
+
+export function getMcpTemplatesDir(): string {
+  return join(getBundledDataDir(), 'mcp-templates')
+}
+
+export function getMarketplaceDir(): string {
+  return getSubDir('marketplace')
+}
+
+export function getMarketplaceInstalledFile(): string {
+  return join(getMarketplaceDir(), 'installed.json')
+}
+
+export function getMarketplaceCatalogCacheFile(): string {
+  return join(getMarketplaceDir(), 'catalog-cache.json')
+}
+
+export function getMarketplaceLocalCatalogFile(): string {
+  return join(getMarketplaceDir(), 'catalog.local.json')
+}
+
+export function getBundledMarketplaceDir(): string {
+  return join(getBundledDataDir(), 'marketplace')
+}
+
+export function getBundledMarketplaceLocalCatalogFile(): string {
+  return join(getBundledMarketplaceDir(), 'catalog.local.json')
+}
+
+export function getMarketplacePackagesDir(): string {
+  return join(getMarketplaceDir(), 'packages')
+}
+
+export function getUpdatesDir(): string {
+  return getSubDir('updates')
+}
+
+export function getLocalUpdateManifestFile(): string {
+  return join(getUpdatesDir(), 'update.local.json')
+}
+
+export function getUpdateManifestCacheFile(): string {
+  return join(getUpdatesDir(), 'manifest-cache.json')
+}
+
+export function getCacheRootDir(): string {
+  const envDir = process.env.KIMO_CACHE_ROOT
+  if (envDir && envDir.trim()) return envDir.trim()
+  return getDataDir()
+}
+
+export function getDefaultWorkspaceDir(): string {
+  const configuredDir = getConfiguredDefaultWorkspaceDir()
+  if (configuredDir) return configuredDir
+
+  const envDir = process.env.KIMO_WORKSPACE_ROOT
+  if (envDir && envDir.trim()) return envDir.trim()
+  return join(dirname(getDataDir()), 'mikospace')
+}
+
+export function getConfiguredDefaultWorkspaceDir(): string | null {
+  try {
+    const raw = readFileSync(getSettingsFile(), 'utf-8')
+    const parsed = JSON.parse(raw) as { defaultWorkspaceDir?: unknown }
+    return normalizeDefaultWorkspaceDir(parsed.defaultWorkspaceDir)
+  } catch {
+    return null
+  }
+}
+
+function normalizeDefaultWorkspaceDir(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.includes('\0')) return null
+
+  if (trimmed === '~') return normalize(homedir()).normalize('NFC')
+  if (trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+    return join(homedir(), trimmed.slice(2)).normalize('NFC')
+  }
+
+  return (isAbsolute(trimmed) ? normalize(trimmed) : resolve(dirname(getDataDir()), trimmed)).normalize('NFC')
+}
+
 // ─── 通用子目录 ─────────────────────────────────────────────────────────
 
 export function getSubDir(name: string): string {
@@ -159,7 +291,7 @@ export function getPluginsDir(): string {
 }
 
 export function getCacheDir(): string {
-  return getSubDir('cache')
+  return join(getCacheRootDir(), 'cache')
 }
 
 export function getPlansDir(): string {
@@ -175,7 +307,7 @@ export function getUploadsDir(): string {
 }
 
 export function getRuntimeDir(): string {
-  return getSubDir('runtime')
+  return join(getCacheRootDir(), 'runtime')
 }
 
 export function getBackupDir(): string {
@@ -187,11 +319,11 @@ export function getLockDir(): string {
 }
 
 export function getDebugDir(): string {
-  return getSubDir('debug')
+  return join(getCacheRootDir(), 'debug')
 }
 
 export function getChromeDir(): string {
-  return getSubDir('chrome')
+  return join(getCacheRootDir(), 'chrome')
 }
 
 // ─── 配置文件（文件路径） ───────────────────────────────────────────────
@@ -314,12 +446,19 @@ export function getComputerUseConfigFile(): string {
 
 // ─── 废弃兼容函数（供 Phase 2 过渡期使用） ────────────────────────────
 
-/** @deprecated kimo 无用户级目录。返回 data/ 目录自身，待 Phase 3 删除调用方。 */
+/** @deprecated 返回用户 data/ 目录自身，待调用方迁移到更明确的路径函数。 */
 export function getUserConfigDir(): string {
   return getDataDir()
 }
 
-/** @deprecated kimo 无用户级目录。返回一个不存在的临时路径，扫描结果为 0。 */
 export function getUserSkillsDir(): string {
-  return join(getDataDir(), '.deprecated-user-skills')
+  return getSkillsDir()
+}
+
+export function getUserAgentsDir(): string {
+  return getAgentsDir()
+}
+
+export function getUserToolsDir(): string {
+  return getSubDir('tools')
 }

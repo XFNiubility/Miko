@@ -42,6 +42,7 @@ import {
 } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
+import { zipSync } from 'fflate'
 import { logForDebugging } from '../debug.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -220,7 +221,6 @@ export async function createZipFromDirectory(
   const visited = new Set<string>()
   await collectFilesForZip(sourceDir, '', files, visited)
 
-  const { zipSync } = await import('fflate')
   const zipData = zipSync(files, { level: 6 })
   logForDebugging(
     `Created ZIP from ${sourceDir}: ${Object.keys(files).length} files, ${zipData.length} bytes`,

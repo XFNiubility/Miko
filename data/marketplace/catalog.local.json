@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-25T00:00:00.000Z",
+  "resources": [
+    {
+      "id": "skill.marketplace-demo",
+      "type": "skill",
+      "name": "marketplace-demo",
+      "version": "1.0.0",
+      "category": "custom",
+      "description": "Minimal local marketplace skill for testing the install, enable, disable, and uninstall flow.",
+      "packagePath": "local-packages/skill.marketplace-demo/1.0.0",
+      "permissions": ["local-skill"]
+    },
+    {
+      "id": "skill.web-research-note",
+      "type": "skill",
+      "name": "web-research-note",
+      "version": "1.0.0",
+      "category": "research",
+      "description": "Skill for turning web findings into a concise source-backed research note.",
+      "packagePath": "local-packages/skill.web-research-note/1.0.0",
+      "permissions": ["network", "read-files"]
+    },
+    {
+      "id": "skill.code-change-brief",
+      "type": "skill",
+      "name": "code-change-brief",
+      "version": "1.0.0",
+      "category": "engineering",
+      "description": "Skill for summarizing code changes, risks, and verification evidence.",
+      "packagePath": "local-packages/skill.code-change-brief/1.0.0",
+      "permissions": ["read-files", "git"]
+    },
+    {
+      "id": "mcp.local-echo",
+      "type": "mcp",
+      "name": "local-echo",
+      "version": "1.0.0",
+      "category": "diagnostics",
+      "description": "Local stdio MCP server with an echo tool for validating marketplace MCP install and connection.",
+      "packagePath": "local-packages/mcp.local-echo/1.0.0",
+      "permissions": ["stdio", "local-process"]
+    },
+    {
+      "id": "mcp.local-toolkit",
+      "type": "mcp",
+      "name": "local-toolkit",
+      "version": "1.0.0",
+      "category": "diagnostics",
+      "description": "Marketplace MCP package that installs two local stdio servers to validate multi-server merge behavior.",
+      "packagePath": "local-packages/mcp.local-toolkit/1.0.0",
+      "permissions": ["stdio", "local-process", "environment"]
+    },
+    {
+      "id": "mcp.security-httpx",
+      "type": "mcp",
+      "name": "security-httpx",
+      "version": "1.0.0",
+      "category": "security",
+      "description": "Real-world httpx MCP package adapted from f1tz/mcp-for-security-python for marketplace preview and install testing.",
+      "packagePath": "local-packages/mcp.security-httpx/1.0.0",
+      "permissions": ["stdio", "local-process", "network", "external-binary", "security-tool"]
+    },
+    {
+      "id": "skill.secskills-index",
+      "type": "skill",
+      "name": "secskills-index",
+      "version": "1.0.0",
+      "category": "security-research",
+      "description": "Defensive index skill based on DaoYiSec/SecSkills for reviewing security Skill/MCP marketplace candidates without executing tools.",
+      "packagePath": "local-packages/skill.secskills-index/1.0.0",
+      "permissions": ["read-files", "network-metadata"]
+    },
+    {
+      "id": "tool.release-checklist",
+      "type": "tool",
+      "name": "release-checklist",
+      "version": "1.0.0",
+      "category": "release",
+      "description": "Tool package sample that defines a release checklist schema for marketplace taxonomy and review testing.",
+      "packagePath": "local-packages/tool.release-checklist/1.0.0",
+      "permissions": ["read-files"]
+    },
+    {
+      "id": "tool.security-cli-adapter",
+      "type": "tool",
+      "name": "security-cli-adapter",
+      "version": "1.0.0",
+      "category": "security",
+      "description": "Tool package sample for security CLI adapters, used to validate marketplace Tool taxonomy while runtime installation remains disabled.",
+      "packagePath": "local-packages/tool.security-cli-adapter/1.0.0",
+      "permissions": ["external-binary", "network", "security-tool"]
+    }
+  ]
+}

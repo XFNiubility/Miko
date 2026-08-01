@@ -10,6 +10,7 @@
 
 import * as fs from 'fs/promises'
 import { randomBytes } from 'node:crypto'
+import { homedir } from 'node:os'
 import * as path from 'path'
 import { ApiError } from '../middleware/errorHandler.js'
 import { normalizeJsonObject, readRecoverableJsonFile } from './recoverableJsonFile.js'
@@ -224,11 +225,54 @@ export class SettingsService {
   /** 更新用户级设置（浅合并） */
   async updateUserSettings(settings: Record<string, unknown>): Promise<void> {
     const filePath = this.getUserSettingsPath()
+    const patch = await this.normalizeUserSettingsPatch(settings)
     await this.withWriteLock(filePath, async () => {
       const current = await this.readJsonFile(filePath)
-      const merged = Object.assign({}, current, settings)
+      const merged = Object.assign({}, current, patch)
       await this.writeJsonFile(filePath, merged)
     })
+  }
+
+  private async normalizeUserSettingsPatch(
+    settings: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!Object.prototype.hasOwnProperty.call(settings, 'defaultWorkspaceDir')) {
+      return settings
+    }
+
+    const next = { ...settings }
+    const value = settings.defaultWorkspaceDir
+    if (value === null || value === undefined) {
+      next.defaultWorkspaceDir = undefined
+      return next
+    }
+
+    if (typeof value !== 'string') {
+      throw ApiError.badRequest('defaultWorkspaceDir must be a string or null')
+    }
+
+    const trimmed = value.trim()
+    if (!trimmed) {
+      next.defaultWorkspaceDir = undefined
+      return next
+    }
+    if (trimmed.includes('\0')) {
+      throw ApiError.badRequest('defaultWorkspaceDir contains an invalid null byte')
+    }
+
+    const expanded = trimmed === '~'
+      ? homedir()
+      : trimmed.startsWith('~/') || trimmed.startsWith('~\\')
+        ? path.join(homedir(), trimmed.slice(2))
+        : trimmed
+    const normalized = (
+      path.isAbsolute(expanded)
+        ? path.normalize(expanded)
+        : path.resolve(path.dirname(this.getConfigDir()), expanded)
+    ).normalize('NFC')
+    await fs.mkdir(normalized, { recursive: true })
+    next.defaultWorkspaceDir = normalized
+    return next
   }
 
   async updateGlobalPrompt(content: string): Promise<void> {

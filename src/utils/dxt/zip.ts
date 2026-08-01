@@ -1,4 +1,5 @@
 import { isAbsolute, normalize } from 'path'
+import { unzipSync } from 'fflate'
 import { logForDebugging } from '../debug.js'
 import { isENOENT } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
@@ -106,14 +107,13 @@ export function validateZipFile(
  * Uses unzipSync to avoid fflate worker termination crashes in bun.
  * Accepts raw zip bytes so that the caller can read the file asynchronously.
  *
- * fflate is lazy-imported to avoid its ~196KB of top-level lookup tables (revfd
- * Int32Array(32769), rev Uint16Array(32768), etc.) being allocated at startup
- * when this module is reached via the plugin loader chain.
+ * Keep fflate statically imported. The desktop sidecar is compiled into a
+ * single Bun executable, and lazy importing fflate would make the packaged
+ * binary try to resolve the package from B:/~BUN/root at runtime.
  */
 export async function unzipFile(
   zipData: Buffer,
 ): Promise<Record<string, Uint8Array>> {
-  const { unzipSync } = await import('fflate')
   const compressedSize = zipData.length
 
   const state: ZipValidationState = {

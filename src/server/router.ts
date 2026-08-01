@@ -30,6 +30,8 @@ import { handleDesktopUiApi } from './api/desktop-ui.js'
 import { handleToolsApi } from './api/tools.js'
 import { handleCatalogApi } from './api/catalog.js'
 import { handleSecurityApi } from './api/security.js'
+import { handleMarketplaceApi } from './api/marketplace.js'
+import { handleUpdatesApi } from './api/updates.js'
 
 export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
   const path = url.pathname
@@ -130,6 +132,12 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     case 'security':
       return handleSecurityApi(req, url, segments)
+
+    case 'marketplace':
+      return handleMarketplaceApi(req, url, segments)
+
+    case 'updates':
+      return handleUpdatesApi(req, url, segments)
 
     case 'filesystem':
       return handleFilesystemRoute(url.pathname, url)

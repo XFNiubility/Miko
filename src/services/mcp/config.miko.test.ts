@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { runWithCwdOverride } from '../../utils/cwd.js'
-import { setDataDir } from '../../utils/kimoPaths.js'
+import { resetDataDirForTests, setDataDir } from '../../utils/kimoPaths.js'
 import {
   addMcpConfig,
   getMcpConfigsByScope,
@@ -25,6 +25,7 @@ async function makeTempRoots(): Promise<{ dataDir: string; cwd: string }> {
 }
 
 afterEach(async () => {
+  resetDataDirForTests()
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
 })
 

@@ -16,7 +16,23 @@ import {
   getDataDir,
   getSkillsDir,
   getAgentsDir,
-  getPluginsDir
+  getPluginsDir,
+  getBundledDataDir,
+  getBuiltinSkillsDir,
+  getBuiltinAgentsDir,
+  getMcpTemplatesDir,
+  getMarketplaceDir,
+  getMarketplaceInstalledFile,
+  getMarketplaceCatalogCacheFile,
+  getMarketplaceLocalCatalogFile,
+  getMarketplacePackagesDir,
+  getUpdatesDir,
+  getLocalUpdateManifestFile,
+  getUpdateManifestCacheFile,
+  getCacheRootDir,
+  getCacheDir,
+  getRuntimeDir,
+  getDefaultWorkspaceDir,
 } from '../../utils/kimoPaths.js'
 // 服务器启动时间（用于计算 uptime）
 const startedAt = Date.now()
@@ -115,16 +131,28 @@ function handleUsage(): Response {
 
 function handlePaths(): Response {
   const dataDir = getDataDir()
-  // 计算 mikospace 目录（与 sessionService 中的逻辑一致）
-  const portableRoot = path.dirname(path.dirname(dataDir))
-  const workspaceDir = path.join(portableRoot, 'mikospace')
 
   return Response.json({
     dataDir,
     skillsDir: getSkillsDir(),
     agentsDir: getAgentsDir(),
     pluginsDir: getPluginsDir(),
-    workspaceDir,
+    bundledDataDir: getBundledDataDir(),
+    builtinSkillsDir: getBuiltinSkillsDir(),
+    builtinAgentsDir: getBuiltinAgentsDir(),
+    mcpTemplatesDir: getMcpTemplatesDir(),
+    marketplaceDir: getMarketplaceDir(),
+    marketplaceInstalledFile: getMarketplaceInstalledFile(),
+    marketplaceCatalogCacheFile: getMarketplaceCatalogCacheFile(),
+    marketplaceLocalCatalogFile: getMarketplaceLocalCatalogFile(),
+    marketplacePackagesDir: getMarketplacePackagesDir(),
+    updatesDir: getUpdatesDir(),
+    localUpdateManifestFile: getLocalUpdateManifestFile(),
+    updateManifestCacheFile: getUpdateManifestCacheFile(),
+    cacheRootDir: getCacheRootDir(),
+    cacheDir: getCacheDir(),
+    runtimeDir: getRuntimeDir(),
+    workspaceDir: getDefaultWorkspaceDir(),
   })
 }
 

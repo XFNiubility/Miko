@@ -1562,6 +1562,65 @@ fn resolve_app_root(_app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn has_bundled_data_children(dir: &Path) -> bool {
+    ["agents", "skills", "tools", "marketplace", "mcp-templates"]
+        .iter()
+        .any(|name| dir.join(name).is_dir())
+}
+
+fn bundled_data_root_candidate(dir: PathBuf) -> Option<PathBuf> {
+    if has_bundled_data_children(&dir) {
+        return Some(dir);
+    }
+
+    let data_dir = dir.join("data");
+    if has_bundled_data_children(&data_dir) {
+        return Some(data_dir);
+    }
+
+    None
+}
+
+fn resolve_bundled_data_root(app: &AppHandle, app_root: &Path) -> Option<PathBuf> {
+    let portable_root = app_root.join("bundled-data");
+    if portable_root.exists() {
+        return Some(portable_root);
+    }
+
+    for candidate in [
+        app_root.join("resources"),
+        app_root.join("_up_"),
+        app_root.join("_up_").join("_up_"),
+        app_root.join("_up"),
+        app_root.join("_up").join("_up"),
+    ] {
+        if let Some(root) = bundled_data_root_candidate(candidate) {
+            return Some(root);
+        }
+    }
+
+    app.path().resource_dir().ok().and_then(|resource_dir| {
+        let nested_root = resource_dir.join("bundled-data");
+        if nested_root.exists() {
+            return Some(nested_root);
+        }
+
+        for candidate in [
+            resource_dir.clone(),
+            resource_dir.join("_up_"),
+            resource_dir.join("_up_").join("_up_"),
+            resource_dir.join("_up"),
+            resource_dir.join("_up").join("_up"),
+        ] {
+            if let Some(root) = bundled_data_root_candidate(candidate) {
+                return Some(root);
+            }
+        }
+
+        None
+    })
+}
+
 fn select_h5_dist_dir(resource_dir: Option<&Path>, app_root: &Path) -> PathBuf {
     let mut candidates = Vec::new();
     if let Some(resource_dir) = resource_dir {
@@ -1610,53 +1669,79 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     // portable config directory. Also set XDG_CACHE_HOME to redirect the
     // env-paths cache from %LOCALAPPDATA%\claude-cli-nodejs\ to alongside
     // the portable config dir.
-    // 内置工具目录（只读资源）：随 MSI 发行的 tools yaml + bin 二进制。
-    // tauri.conf.json resources 里 "../../data/tools" → 安装后落在 resource_dir/tools/。
-    // 通过 KIMO_BUILTIN_TOOLS_DIR 告知 server sidecar，其优先于 data/ 的可写目录来
-    // 扫描 yaml 和定位 bundled 二进制，只有 .status.json 等缓存文件才写可写目录。
-    let builtin_tools_dir = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|d| d.join("tools"));
+    let bundled_data_root = std::env::var_os("KIMO_BUNDLED_DATA_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| resolve_bundled_data_root(app, &app_root));
 
     if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-        let cache_dir = PathBuf::from(&config_dir).join("Cache");
+        let data_root = std::env::var_os("KIMO_DATA_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&config_dir).join("data"));
+        let cache_root = std::env::var_os("KIMO_CACHE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&config_dir).join("cache"));
+        let cache_dir = cache_root.join("cache");
         if let Err(e) = fs::create_dir_all(&cache_dir) {
             eprintln!("[desktop] failed to create Cache dir: {e}");
         }
-        // 数据根统一带 data 一层：KIMO_DATA_ROOT = <可移植目录>/data。
-        let data_root = PathBuf::from(&config_dir).join("data");
         sidecar = sidecar
             .env("CLAUDE_CONFIG_DIR", &config_dir)
             .env("KIMO_DATA_ROOT", data_root.to_string_lossy().to_string())
+            .env("KIMO_CACHE_ROOT", cache_root.to_string_lossy().to_string())
             .env("XDG_CACHE_HOME", cache_dir.to_string_lossy().to_string())
             .env("CLAUDE_H5_AUTO_PUBLIC_URL", "1")
             .env("CLAUDE_H5_DIST_DIR", &h5_dist_dir);
     } else {
-        // 默认模式（非便携，未设 CLAUDE_CONFIG_DIR，如 MSI 普通安装）：仍必须显式注入
-        // 数据根锚点，否则 server 及其派生的 CLI 子进程（agent/worker）拿不到 KIMO_DATA_ROOT，
-        // getDataDir() 各自兜底 → agents 目录扫空（security-explore not found）、会话工作
-        // 目录飘到 home。锚点 = app_root/data（主 exe 目录旁 data），与 TS 层 getDataDir()
-        // 的 exe 旁回退一致。此处不设 CLAUDE_CONFIG_DIR：默认模式不引入便携语义，只补数据根。
-        let data_root = app_root.join("data");
-        let cache_dir = data_root.join("Cache");
+        let data_root = std::env::var_os("KIMO_DATA_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| app_root.join("data"));
+        let cache_root = std::env::var_os("KIMO_CACHE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_root.join("cache-root"));
+        let cache_dir = cache_root.join("cache");
         if let Err(e) = fs::create_dir_all(&cache_dir) {
             eprintln!("[desktop] failed to create default-mode Cache dir: {e}");
         }
         sidecar = sidecar
             .env("KIMO_DATA_ROOT", data_root.to_string_lossy().to_string())
+            .env("KIMO_CACHE_ROOT", cache_root.to_string_lossy().to_string())
             .env("XDG_CACHE_HOME", cache_dir.to_string_lossy().to_string())
             .env("CLAUDE_H5_AUTO_PUBLIC_URL", "1")
             .env("CLAUDE_H5_DIST_DIR", &h5_dist_dir);
     }
-    // 两条分支共同注入内置工具目录（有则注入，无则跳过——开发态 resource_dir 可能为 None）。
-    if let Some(tools_dir) = builtin_tools_dir {
-        if tools_dir.exists() {
+    if let Ok(workspace_root) = std::env::var("KIMO_WORKSPACE_ROOT") {
+        sidecar = sidecar.env("KIMO_WORKSPACE_ROOT", workspace_root);
+    }
+    if let Some(bundled_root) = bundled_data_root {
+        sidecar = sidecar.env("KIMO_BUNDLED_DATA_ROOT", bundled_root.to_string_lossy().to_string());
+        let builtin_skills_dir = bundled_root.join("skills");
+        let builtin_agents_dir = bundled_root.join("agents");
+        let builtin_tools_dir = bundled_root.join("tools");
+        if builtin_skills_dir.exists() {
+            sidecar = sidecar.env(
+                "KIMO_BUILTIN_SKILLS_DIR",
+                builtin_skills_dir.to_string_lossy().to_string(),
+            );
+        }
+        if builtin_agents_dir.exists() {
+            sidecar = sidecar.env(
+                "KIMO_BUILTIN_AGENTS_DIR",
+                builtin_agents_dir.to_string_lossy().to_string(),
+            );
+        }
+        if builtin_tools_dir.exists() {
             sidecar = sidecar.env(
                 "KIMO_BUILTIN_TOOLS_DIR",
-                tools_dir.to_string_lossy().to_string(),
+                builtin_tools_dir.to_string_lossy().to_string(),
             );
+        } else if let Ok(resource_dir) = app.path().resource_dir() {
+            let legacy_tools_dir = resource_dir.join("tools");
+            if legacy_tools_dir.exists() {
+                sidecar = sidecar.env(
+                    "KIMO_BUILTIN_TOOLS_DIR",
+                    legacy_tools_dir.to_string_lossy().to_string(),
+                );
+            }
         }
     }
     let sidecar = sidecar.args([
@@ -1779,20 +1864,34 @@ fn start_adapters_sidecars(app: &AppHandle) -> Result<Vec<CommandChild>, String>
         // Pass through CLAUDE_CONFIG_DIR for portable installs
         let mut sidecar_final = sidecar.env("ADAPTER_SERVER_URL", &server_ws_url);
         if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-            let cache_dir = PathBuf::from(&config_dir).join("Cache");
-            // 与 server sidecar 保持同一数据根：<可移植目录>/data，避免 adapter
-            // 的配对/绑定数据与 server 数据落到不同目录。
-            let data_root = PathBuf::from(&config_dir).join("data");
+            let data_root = std::env::var_os("KIMO_DATA_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&config_dir).join("data"));
+            let cache_root = std::env::var_os("KIMO_CACHE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&config_dir).join("cache"));
+            let cache_dir = cache_root.join("cache");
             sidecar_final = sidecar_final
                 .env("CLAUDE_CONFIG_DIR", &config_dir)
                 .env("KIMO_DATA_ROOT", data_root.to_string_lossy().to_string())
+                .env("KIMO_CACHE_ROOT", cache_root.to_string_lossy().to_string())
                 .env("XDG_CACHE_HOME", cache_dir.to_string_lossy().to_string());
         } else {
-            // 默认模式（未设 CLAUDE_CONFIG_DIR）：与 server sidecar 对称，注入 app_root/data
-            // 作数据根，保证 adapter 的配对/绑定数据与 server 落同一根。不设 CLAUDE_CONFIG_DIR。
-            let data_root = app_root.join("data");
+            let data_root = std::env::var_os("KIMO_DATA_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| app_root.join("data"));
+            let cache_root = std::env::var_os("KIMO_CACHE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_root.join("cache-root"));
             sidecar_final = sidecar_final
-                .env("KIMO_DATA_ROOT", data_root.to_string_lossy().to_string());
+                .env("KIMO_DATA_ROOT", data_root.to_string_lossy().to_string())
+                .env("KIMO_CACHE_ROOT", cache_root.to_string_lossy().to_string());
+        }
+        if let Ok(workspace_root) = std::env::var("KIMO_WORKSPACE_ROOT") {
+            sidecar_final = sidecar_final.env("KIMO_WORKSPACE_ROOT", workspace_root);
+        }
+        if let Ok(bundled_root) = std::env::var("KIMO_BUNDLED_DATA_ROOT") {
+            sidecar_final = sidecar_final.env("KIMO_BUNDLED_DATA_ROOT", bundled_root);
         }
         let sidecar = sidecar_final.args(["adapters", "--app-root", &app_root_arg, flag]);
 

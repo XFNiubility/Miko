@@ -94,6 +94,7 @@ export type UserSettings = {
   }
   language?: string
   desktopTerminal?: Partial<DesktopTerminalSettings>
+  defaultWorkspaceDir?: string | null
   [key: string]: unknown
 }
 

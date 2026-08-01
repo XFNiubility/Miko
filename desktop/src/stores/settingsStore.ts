@@ -70,6 +70,7 @@ type SettingsStore = {
   h5AccessDiagnostics: H5AccessDiagnostics | null
   h5AccessError: string | null
   responseLanguage: string
+  defaultWorkspaceDir: string
   uiZoom: number
   isLoading: boolean
   error: string | null
@@ -101,6 +102,7 @@ type SettingsStore = {
     publicBaseUrl?: string | null
   }) => Promise<void>
   setResponseLanguage: (language: string) => Promise<void>
+  setDefaultWorkspaceDir: (dir: string | null) => Promise<void>
   fetchAppMode: () => Promise<void>
   setAppMode: (mode: AppMode, portableDir?: string | null) => Promise<void>
   setUiZoom: (zoom: number) => void
@@ -156,6 +158,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   h5AccessDiagnostics: null,
   h5AccessError: null,
   responseLanguage: '',
+  defaultWorkspaceDir: '',
   uiZoom: readStoredAppZoomLevel(),
   isLoading: false,
   error: null,
@@ -208,6 +211,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         h5AccessDiagnostics: h5AccessResult.diagnostics,
         h5AccessError: h5AccessResult.error,
         responseLanguage: typeof userSettings.language === 'string' ? userSettings.language : '',
+        defaultWorkspaceDir: typeof userSettings.defaultWorkspaceDir === 'string'
+          ? userSettings.defaultWorkspaceDir
+          : '',
         isLoading: false,
         error: null,
       })
@@ -450,6 +456,24 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await settingsApi.updateUser({ language: language || undefined })
     } catch {
       set({ responseLanguage: prev })
+    }
+  },
+
+  setDefaultWorkspaceDir: async (dir) => {
+    const prev = get().defaultWorkspaceDir
+    const next = typeof dir === 'string' ? dir.trim() : ''
+    set({ defaultWorkspaceDir: next })
+    try {
+      await settingsApi.updateUser({ defaultWorkspaceDir: next || null })
+      const userSettings = await settingsApi.getUser()
+      set({
+        defaultWorkspaceDir: typeof userSettings.defaultWorkspaceDir === 'string'
+          ? userSettings.defaultWorkspaceDir
+          : '',
+      })
+    } catch (error) {
+      set({ defaultWorkspaceDir: prev })
+      throw error
     }
   },
 

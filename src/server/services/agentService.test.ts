@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { setDataDir } from '../../utils/kimoPaths.js'
+import { resetDataDirForTests, setDataDir } from '../../utils/kimoPaths.js'
 import {
   clearAgentDefinitionsCache,
   getAgentDefinitionsWithOverrides,
@@ -11,6 +11,7 @@ import {
 import { AgentService } from './agentService.js'
 
 const tempDirs: string[] = []
+const originalBuiltinAgentsDir = process.env.KIMO_BUILTIN_AGENTS_DIR
 
 async function makeTempDataDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'miko-agent-service-'))
@@ -21,6 +22,12 @@ async function makeTempDataDir(): Promise<string> {
 
 afterEach(async () => {
   clearAgentDefinitionsCache()
+  resetDataDirForTests()
+  if (originalBuiltinAgentsDir === undefined) {
+    delete process.env.KIMO_BUILTIN_AGENTS_DIR
+  } else {
+    process.env.KIMO_BUILTIN_AGENTS_DIR = originalBuiltinAgentsDir
+  }
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
@@ -115,6 +122,28 @@ describe('AgentService', () => {
     expect(agent).toBeDefined()
     expect(agent?.whenToUse).toBe('Fresh test agent')
     expect(agent?.getSystemPrompt()).toBe('Respond as the fresh test agent.')
+  })
+
+  it('loads bundled markdown agents when the user agents directory is empty', async () => {
+    const dataDir = await makeTempDataDir()
+    const bundledDir = await mkdtemp(join(tmpdir(), 'miko-bundled-agents-'))
+    tempDirs.push(bundledDir)
+    await writeFile(
+      join(bundledDir, 'bundled-agent.md'),
+      '---\nname: bundled-agent\ndescription: Bundled test agent\n---\n\nBundled prompt\n',
+      'utf-8',
+    )
+    process.env.KIMO_BUILTIN_AGENTS_DIR = bundledDir
+    clearAgentDefinitionsCache()
+
+    const { activeAgents, allAgents } = await getAgentDefinitionsWithOverrides(dataDir)
+    const agent = activeAgents.find(item => item.agentType === 'bundled-agent')
+
+    expect(agent).toBeDefined()
+    expect(agent?.source).toBe('built-in')
+    expect(agent?.baseDir).toBe('built-in')
+    expect(agent?.getSystemPrompt()).toBe('Bundled prompt')
+    expect(allAgents.some(item => item.agentType === 'bundled-agent')).toBe(true)
   })
 
   it('treats case-only name differences as existing agents', async () => {

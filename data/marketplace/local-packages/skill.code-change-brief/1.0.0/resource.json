@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "skill.code-change-brief",
+  "type": "skill",
+  "name": "code-change-brief",
+  "version": "1.0.0",
+  "category": "engineering",
+  "description": "Skill for summarizing code changes, risks, and verification evidence.",
+  "permissions": ["read-files", "git"]
+}

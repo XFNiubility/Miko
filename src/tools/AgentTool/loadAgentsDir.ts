@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
+import { readdir, readFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { basename } from 'path'
+import { basename, join, resolve } from 'path'
 import type { SettingSource } from 'src/utils/settings/constants.js'
 import { z } from 'zod/v4'
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
@@ -20,9 +21,13 @@ import {
   parseEffortValue,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { parsePositiveIntFromFrontmatter } from '../../utils/frontmatterParser.js'
+import {
+  parseFrontmatter,
+  parsePositiveIntFromFrontmatter,
+} from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
+import { getAgentsDir, getBuiltinAgentsDir } from '../../utils/kimoPaths.js'
 import {
   loadMarkdownFilesForSubdir,
   parseAgentToolsFromFrontmatter,
@@ -283,8 +288,37 @@ export const getAgentDefinitionsWithOverrides = memoize(
 
     try {
       const markdownFiles = await loadMarkdownFilesForSubdir('agents', cwd)
+      const bundledMarkdownFiles = await loadBundledAgentMarkdownFiles()
 
       const failedFiles: Array<{ path: string; error: string }> = []
+      const bundledAgents = bundledMarkdownFiles
+        .map(({ filePath, baseDir, frontmatter, content }) => {
+          const agent = parseAgentFromMarkdown(
+            filePath,
+            baseDir,
+            frontmatter,
+            content,
+            'projectSettings',
+          )
+          if (!agent) {
+            if (frontmatter['name']) {
+              const errorMsg = getParseError(frontmatter)
+              failedFiles.push({ path: filePath, error: errorMsg })
+              logForDebugging(
+                `Failed to parse bundled agent from ${filePath}: ${errorMsg}`,
+              )
+            }
+            return null
+          }
+          return {
+            ...agent,
+            source: 'built-in' as const,
+            baseDir: 'built-in' as const,
+            getSystemPrompt: () => agent.getSystemPrompt(),
+          } satisfies BuiltInAgentDefinition
+        })
+        .filter((agent): agent is BuiltInAgentDefinition => agent !== null)
+
       const customAgents = markdownFiles
         .map(({ filePath, baseDir, frontmatter, content, source }) => {
           const agent = parseAgentFromMarkdown(
@@ -332,6 +366,7 @@ export const getAgentDefinitionsWithOverrides = memoize(
       const pluginAgents = await pluginAgentsPromise
 
       const allAgentsList: AgentDefinition[] = [
+        ...bundledAgents,
         ...pluginAgents,
         ...customAgents,
       ]
@@ -368,6 +403,75 @@ export function clearAgentDefinitionsCache(): void {
   getAgentDefinitionsWithOverrides.cache.clear?.()
   loadMarkdownFilesForSubdir.cache.clear?.()
   clearPluginAgentCache()
+}
+
+async function loadBundledAgentMarkdownFiles(): Promise<
+  Array<{
+    filePath: string
+    baseDir: string
+    frontmatter: Record<string, unknown>
+    content: string
+  }>
+> {
+  const bundledDir = getBuiltinAgentsDir()
+  const userDir = getAgentsDir()
+  if (resolve(bundledDir) === resolve(userDir)) {
+    return []
+  }
+
+  const files = await listMarkdownFiles(bundledDir)
+  const results = await Promise.all(
+    files.map(async filePath => {
+      try {
+        const rawContent = await readFile(filePath, 'utf-8')
+        const { frontmatter, content } = parseFrontmatter(rawContent, filePath)
+        return {
+          filePath,
+          baseDir: bundledDir,
+          frontmatter,
+          content,
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        logForDebugging(
+          `Failed to read/parse bundled agent file ${filePath}: ${errorMessage}`,
+        )
+        return null
+      }
+    }),
+  )
+
+  return results.filter((file): file is NonNullable<typeof file> => file !== null)
+}
+
+async function listMarkdownFiles(dir: string): Promise<string[]> {
+  let entries: Awaited<ReturnType<typeof readdir>>
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch (error) {
+    if (isFsInaccessibleError(error)) return []
+    throw error
+  }
+
+  const files: string[] = []
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...await listMarkdownFiles(fullPath))
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      files.push(fullPath)
+    }
+  }
+  return files
+}
+
+function isFsInaccessibleError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code !== undefined &&
+    ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code!)
+  )
 }
 
 /**

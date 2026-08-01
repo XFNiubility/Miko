@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "marketplace_echo": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PACKAGE_DIR}/server/echo-server.js"],
+      "env": {
+        "MARKETPLACE_ECHO_PREFIX": "Miko Marketplace"
+      }
+    }
+  }
+}

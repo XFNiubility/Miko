@@ -19,6 +19,7 @@ export const PROTECTED_AGENTS: readonly string[] = [
   'Plan',
   'general-purpose',
   'verification',
+  'security-resource-extractor',
   'skill-creator-agent',
   'skill-editor',
   'statusline-setup',

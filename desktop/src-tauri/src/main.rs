@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     // Determine if we should start in portable mode and set CLAUDE_CONFIG_DIR
@@ -23,12 +23,16 @@ fn main() {
             portable_dir.to_string_lossy().to_string(),
         );
         std::env::set_var("CC_HAHA_APP_PORTABLE_DIR", "1");
+        configure_layered_env(Some(&portable_dir));
+    } else if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        configure_layered_env(Some(Path::new(&config_dir)));
+    } else {
+        configure_layered_env(None);
     }
 
-    // If CLAUDE_CONFIG_DIR is set (either from env or from our startup logic above),
-    // redirect WebView2 user data folder so EBWebView cache lives alongside it.
-    if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-        let webview_data = PathBuf::from(&config_dir).join("EBWebView");
+    // Redirect WebView2 user data into the cache layer instead of the install dir.
+    if let Ok(cache_root) = std::env::var("KIMO_CACHE_ROOT") {
+        let webview_data = PathBuf::from(&cache_root).join("EBWebView");
         if let Err(e) = fs::create_dir_all(&webview_data) {
             eprintln!("[desktop] failed to create EBWebView dir: {e}");
         }
@@ -36,6 +40,213 @@ fn main() {
     }
 
     claude_code_desktop_lib::run()
+}
+
+fn set_env_if_missing(key: &str, value: PathBuf) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value.to_string_lossy().to_string());
+    }
+}
+
+fn create_env_dir_if_set(key: &str) {
+    if let Some(value) = std::env::var_os(key) {
+        if let Err(e) = fs::create_dir_all(PathBuf::from(value)) {
+            eprintln!("[desktop] failed to create {key} dir: {e}");
+        }
+    }
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent().map(Path::to_path_buf)
+}
+
+fn get_default_portable_dir() -> Option<PathBuf> {
+    let exe_dir = current_exe_dir()?;
+    Some(exe_dir.join("CLAUDE_CONFIG_DIR"))
+}
+
+fn default_user_data_root() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Miko").join("data"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Miko")
+                .join("data")
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
+            .map(|dir| dir.join("Miko").join("data"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+fn default_cache_root() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Miko"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Caches")
+                .join("Miko")
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+            .map(|dir| dir.join("Miko"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+fn default_workspace_root() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Documents").join("Miko").join("mikospace"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Documents")
+                .join("Miko")
+                .join("mikospace")
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Documents")
+                .join("Miko")
+                .join("mikospace")
+        });
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+fn is_default_portable_config_dir(config_dir: &Path) -> bool {
+    get_default_portable_dir()
+        .as_ref()
+        .map(|default_dir| default_dir == config_dir)
+        .unwrap_or(false)
+}
+
+fn has_bundled_data_children(dir: &Path) -> bool {
+    ["agents", "skills", "tools", "marketplace", "mcp-templates"]
+        .iter()
+        .any(|name| dir.join(name).is_dir())
+}
+
+fn bundled_data_root_candidate(dir: PathBuf) -> Option<PathBuf> {
+    if has_bundled_data_children(&dir) {
+        return Some(dir);
+    }
+
+    let data_dir = dir.join("data");
+    if has_bundled_data_children(&data_dir) {
+        return Some(data_dir);
+    }
+
+    None
+}
+
+fn resolve_bundled_data_root(exe_dir: &Path) -> Option<PathBuf> {
+    let portable_root = exe_dir.join("bundled-data");
+    if portable_root.exists() {
+        return Some(portable_root);
+    }
+
+    for candidate in [
+        exe_dir.join("resources"),
+        exe_dir.join("_up_"),
+        exe_dir.join("_up_").join("_up_"),
+        exe_dir.join("_up"),
+        exe_dir.join("_up").join("_up"),
+        exe_dir.to_path_buf(),
+    ] {
+        if let Some(root) = bundled_data_root_candidate(candidate) {
+            return Some(root);
+        }
+    }
+
+    None
+}
+
+fn configure_layered_env(portable_config_dir: Option<&Path>) {
+    let exe_dir = current_exe_dir();
+
+    if let Some(exe_dir) = exe_dir.as_ref() {
+        if let Some(bundled_data) = resolve_bundled_data_root(exe_dir) {
+            set_env_if_missing("KIMO_BUNDLED_DATA_ROOT", bundled_data);
+        }
+    }
+
+    if let Some(config_dir) = portable_config_dir {
+        if let Some(exe_dir) = exe_dir.as_ref().filter(|_| is_default_portable_config_dir(config_dir)) {
+            set_env_if_missing("KIMO_DATA_ROOT", exe_dir.join("userdata").join("data"));
+            set_env_if_missing("KIMO_CACHE_ROOT", exe_dir.join("userdata").join("cache"));
+            set_env_if_missing("KIMO_WORKSPACE_ROOT", exe_dir.join("mikospace"));
+        } else {
+            set_env_if_missing("KIMO_DATA_ROOT", config_dir.join("data"));
+            set_env_if_missing("KIMO_CACHE_ROOT", config_dir.join("cache"));
+            set_env_if_missing("KIMO_WORKSPACE_ROOT", config_dir.join("mikospace"));
+        }
+    } else {
+        if let Some(data_root) = default_user_data_root() {
+            set_env_if_missing("KIMO_DATA_ROOT", data_root);
+        }
+        if let Some(workspace_root) = default_workspace_root() {
+            set_env_if_missing("KIMO_WORKSPACE_ROOT", workspace_root);
+        }
+        if let Some(cache_root) = default_cache_root() {
+            set_env_if_missing("KIMO_CACHE_ROOT", cache_root);
+        }
+    }
+
+    create_env_dir_if_set("KIMO_DATA_ROOT");
+    create_env_dir_if_set("KIMO_CACHE_ROOT");
+    create_env_dir_if_set("KIMO_WORKSPACE_ROOT");
 }
 
 /// Determine if we should start in portable mode.

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "security_httpx": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${PACKAGE_DIR}/server.py",
+        "httpx"
+      ],
+      "env": {
+        "MIKO_MARKETPLACE_RESOURCE": "mcp.security-httpx"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "skill.secskills-index",
+  "type": "skill",
+  "name": "secskills-index",
+  "version": "1.0.0",
+  "category": "security-research",
+  "description": "A defensive index skill based on DaoYiSec/SecSkills for evaluating security Skill/MCP marketplace discovery flows."
+}
