@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri-schema-v2.json",
   "productName": "miko",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "identifier": "com.miko.desktop",
   "build": {
     "frontendDist": "../dist",
