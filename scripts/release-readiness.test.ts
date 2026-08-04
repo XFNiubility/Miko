@@ -63,6 +63,8 @@ describe('desktop release readiness', () => {
     expect(workflow).toContain('updaterJsonPreferNsis: true')
     expect(workflow).toContain('release-notes/v${{ steps.version.outputs.value }}.md')
     expect(readText('scripts/release.ts')).toContain("'release/version-policy.json'")
+    expect(readText('scripts/release.ts')).toContain("path.join(homedir(), '.cargo')")
+    expect(readText('scripts/release.ts')).toContain("process.platform === 'win32' ? 'cargo.exe' : 'cargo'")
   })
 
   it('keeps public release and build surfaces branded as Miko', () => {

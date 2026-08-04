@@ -11,10 +11,13 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { assertReleaseVersion, type ReleaseVersionPolicy } from './release-version.js'
 
 const root = path.resolve(import.meta.dir, '..')
+const cargoHome = process.env.CARGO_HOME || path.join(homedir(), '.cargo')
+const cargoExecutable = path.join(cargoHome, 'bin', process.platform === 'win32' ? 'cargo.exe' : 'cargo')
 
 const VERSION_FILES = [
   {
@@ -149,9 +152,9 @@ for (const file of VERSION_FILES) {
   console.log(`  Updated: ${path.relative(root, file.path)}`)
 }
 
-// Regenerate Cargo.lock
+// Refresh the workspace package entry without recreating the full dependency lock.
 console.log('\n  Updating Cargo.lock...')
-await run(['cargo', 'generate-lockfile'], path.join(root, 'desktop/src-tauri'))
+await run([existsSync(cargoExecutable) ? cargoExecutable : 'cargo', 'check'], path.join(root, 'desktop/src-tauri'))
 
 // Git commit + tag
 console.log('  Creating git commit...')
