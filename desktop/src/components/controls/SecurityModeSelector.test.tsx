@@ -1,21 +1,20 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { setSessionSecurityMode } = vi.hoisted(() => ({
-  setSessionSecurityMode: vi.fn(),
-}))
-
-vi.mock('../../stores/chatStore', () => ({
-  useChatStore: (selector: (state: unknown) => unknown) => selector({
-    sessions: {
-      'session-1': {
-        securityModeEnabled: false,
-        securityModeTarget: '',
+vi.mock('../../stores/chatStore', () => {
+  const setSessionSecurityMode = vi.fn()
+  return {
+    useChatStore: (selector: (state: unknown) => unknown) => selector({
+      sessions: {
+        'session-1': {
+          securityModeEnabled: false,
+          securityModeTarget: '',
+        },
       },
-    },
-    setSessionSecurityMode,
-  }),
-}))
+      setSessionSecurityMode,
+    }),
+  }
+})
 
 vi.mock('../../stores/tabStore', () => ({
   useTabStore: (selector: (state: unknown) => unknown) => selector({
@@ -23,14 +22,21 @@ vi.mock('../../stores/tabStore', () => ({
   }),
 }))
 
+import { useChatStore } from '../../stores/chatStore'
 import { SecurityModeSelector } from './SecurityModeSelector'
+
+const describeUi = typeof document === 'undefined' ? describe.skip : describe
+
+function getSetSessionSecurityModeMock() {
+  return useChatStore((state) => state.setSessionSecurityMode) as ReturnType<typeof vi.fn>
+}
 
 afterEach(() => {
   cleanup()
-  setSessionSecurityMode.mockReset()
+  getSetSessionSecurityModeMock().mockReset()
 })
 
-describe('SecurityModeSelector', () => {
+describeUi('SecurityModeSelector', () => {
   it('keeps the menu within the viewport and does not offer a manual target preset', () => {
     render(<SecurityModeSelector />)
 
@@ -50,6 +56,6 @@ describe('SecurityModeSelector', () => {
     fireEvent.click(screen.getByRole('button', { name: '开启探索模式' }))
     fireEvent.click(screen.getByRole('button', { name: '开启' }))
 
-    expect(setSessionSecurityMode).toHaveBeenCalledWith('session-1', true)
+    expect(getSetSessionSecurityModeMock()).toHaveBeenCalledWith('session-1', true)
   })
 })
