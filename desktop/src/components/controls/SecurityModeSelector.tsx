@@ -7,7 +7,7 @@ import { ActionDialog } from '../shared/ActionDialog'
  * 探索模式（黑板）开关。挂在会话工具栏。
  * 黑板归会话——开启即进黑板模式，不强制先选项目（事后可沉淀成项目）。
  * 通用探索思路（安全测试只是用途之一，也可用于代码审计/调研/分析等）。
- * 可选填目标（不填则 agent 从对话推导）。开启 = 探索子 agent 对目标完全跳过权限，故走确认弹窗。
+ * 开启 = 探索子 agent 对目标完全跳过权限，故走确认弹窗。
  */
 type Props = { compact?: boolean }
 
@@ -23,7 +23,6 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
   const currentTarget = session?.securityModeTarget || ''
 
   const [open, setOpen] = useState(false)
-  const [inputTarget, setInputTarget] = useState('')  // 输入框的临时状态
   const [confirming, setConfirming] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -45,10 +44,9 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
 
   function applyEnable() {
     if (!activeTabId) return
-    setSessionSecurityMode(activeTabId, true, { target: inputTarget.trim() || undefined })
+    setSessionSecurityMode(activeTabId, true)
     setOpen(false)
     setConfirming(false)
-    setInputTarget('')  // 清空输入框
   }
 
   function disable() {
@@ -67,6 +65,7 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
         onClick={() => setOpen(!open)}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={enabled ? '探索模式已开启' : '探索模式'}
         title={enabled ? '探索模式已开启' : '探索模式'}
         className={`flex items-center whitespace-nowrap font-medium transition-colors ${buttonClass} ${
           enabled
@@ -87,7 +86,7 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
         <div
           ref={menuRef}
           role="menu"
-          className="absolute left-0 bottom-full mb-2 w-[320px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)] z-50"
+          className="absolute bottom-full right-0 z-50 mb-2 w-[min(320px,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-2 shadow-[var(--shadow-dropdown)]"
         >
           <div className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-[var(--color-outline)]">
             探索模式（黑板）
@@ -116,15 +115,6 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
               <div className="text-xs text-[var(--color-text-tertiary)]">
                 开启后 agent 在本会话自主探索目标，边探边写黑板。先开探索，事后可沉淀成项目。
               </div>
-              <label className="mt-2.5 block text-[11px] font-semibold text-[var(--color-text-secondary)]">
-                目标（可选，不填则从对话推导）
-              </label>
-              <input
-                value={inputTarget}
-                onChange={(e) => setInputTarget(e.target.value)}
-                placeholder="目标 URL / 路径 / 主题…"
-                className="mt-1 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-brand)] focus:outline-none"
-              />
               <button
                 onClick={() => { setOpen(false); setConfirming(true) }}
                 className="mt-2.5 w-full rounded-lg bg-[var(--color-brand)] px-3 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
@@ -149,11 +139,6 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
             <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
               仅在你有授权的目标上使用。会话将重启以进入黑板模式。
             </p>
-            {inputTarget.trim() && (
-              <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container)] px-3 py-2 text-xs text-[var(--color-text-primary)]">
-                {inputTarget.trim()}
-              </div>
-            )}
           </div>
         )}
         actions={[
