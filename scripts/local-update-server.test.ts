@@ -10,11 +10,11 @@ import {
 describe('local update server', () => {
   it('rewrites updater download URLs to the local server', () => {
     const rewritten = rewriteManifestUrls({
-      version: '0.3.3',
+      version: '1.3.0',
       platforms: {
         'windows-x86_64': {
           signature: 'signature',
-          url: 'https://github.com/OpenAisec/miko/releases/download/v0.3.3/Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
+          url: 'https://github.com/OpenAisec/miko/releases/download/v1.3.0/Miko_1.3.0_windows_x64_nsis.exe',
         },
       },
     }, 'http://127.0.0.1:8789') as {
@@ -22,18 +22,18 @@ describe('local update server', () => {
     }
 
     expect(rewritten.platforms['windows-x86_64'].url).toBe(
-      'http://127.0.0.1:8789/download/Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
+      'http://127.0.0.1:8789/download/Miko_1.3.0_windows_x64_nsis.exe',
     )
   })
 
   it('preserves non-url fields', () => {
     const rewritten = rewriteManifestUrls({
-      version: '0.3.3',
+      version: '1.3.0',
       notes: 'local test',
       platforms: {
         'windows-x86_64': {
           signature: 'signature',
-          url: 'Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
+          url: 'Miko_1.3.0_windows_x64_nsis.exe',
         },
       },
     }, 'http://127.0.0.1:8789') as {
@@ -42,42 +42,42 @@ describe('local update server', () => {
       platforms: Record<string, { signature: string }>
     }
 
-    expect(rewritten.version).toBe('0.3.3')
+    expect(rewritten.version).toBe('1.3.0')
     expect(rewritten.notes).toBe('local test')
     expect(rewritten.platforms['windows-x86_64'].signature).toBe('signature')
   })
 
   it('keeps exact artifact names when the file exists locally', () => {
-    expect(resolveLocalArtifactName('miko_0.3.3_x64-setup.exe', [
-      'Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
-      'miko_0.3.3_x64-setup.exe',
-    ])).toBe('miko_0.3.3_x64-setup.exe')
+    expect(resolveLocalArtifactName('miko_1.3.0_x64-setup.exe', [
+      'Miko_1.3.0_windows_x64_nsis.exe',
+      'miko_1.3.0_x64-setup.exe',
+    ])).toBe('miko_1.3.0_x64-setup.exe')
   })
 
   it('maps updater URLs to the staged artifact name when build output was renamed', () => {
     const rewritten = rewriteManifestUrlsWithArtifacts({
-      version: '0.3.3',
+      version: '1.3.0',
       platforms: {
         'windows-x86_64': {
           signature: 'signature',
-          url: 'https://github.com/OpenAisec/miko/releases/download/v0.3.3/miko_0.3.3_x64-setup.exe',
+          url: 'https://github.com/OpenAisec/miko/releases/download/v1.3.0/miko_1.3.0_x64-setup.exe',
         },
       },
     }, 'http://127.0.0.1:8789', [
       'BUILD_INFO.txt',
-      'Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
+      'Miko_1.3.0_windows_x64_nsis.exe',
     ]) as {
       platforms: Record<string, { url: string }>
     }
 
     expect(rewritten.platforms['windows-x86_64'].url).toBe(
-      'http://127.0.0.1:8789/download/Claude-Code-Haha_0.3.3_windows_x64_nsis.exe',
+      'http://127.0.0.1:8789/download/Miko_1.3.0_windows_x64_nsis.exe',
     )
   })
 
   it('accepts PowerShell-written latest.json files with a UTF-8 BOM', () => {
-    const manifest = parseUpdaterManifest('\uFEFF{"version":"0.3.3"}') as { version: string }
+    const manifest = parseUpdaterManifest('\uFEFF{"version":"1.3.0"}') as { version: string }
 
-    expect(manifest.version).toBe('0.3.3')
+    expect(manifest.version).toBe('1.3.0')
   })
 })

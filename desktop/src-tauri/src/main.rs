@@ -39,7 +39,7 @@ fn main() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_data);
     }
 
-    claude_code_desktop_lib::run()
+    miko_desktop_lib::run()
 }
 
 fn set_env_if_missing(key: &str, value: PathBuf) {

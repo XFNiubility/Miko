@@ -37,7 +37,7 @@ console.log('[DEBUG] bunTarget:', bunTarget)
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/claude-sidecar.ts'),
   outfileBase: path.join(binariesDir, `claude-sidecar-${targetTriple}`),
-  productName: 'Claude Code Sidecar',
+  productName: 'Miko Sidecar',
   bunTarget,
 })
 console.log('[DEBUG] compileExecutable finished')

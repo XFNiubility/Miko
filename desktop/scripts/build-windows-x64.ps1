@@ -141,7 +141,8 @@ function Test-NsisAvailable {
 function Get-LatestArtifact {
   param(
     [string[]]$SearchRoots,
-    [string[]]$Patterns
+    [string[]]$Patterns,
+    [datetime]$ModifiedSince = [datetime]::MinValue
   )
 
   foreach ($root in $SearchRoots) {
@@ -151,6 +152,7 @@ function Get-LatestArtifact {
 
     foreach ($pattern in $Patterns) {
       $match = Get-ChildItem -Path $root -File -Filter $pattern -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $ModifiedSince } |
         Sort-Object Name |
         Select-Object -Last 1
 
@@ -168,12 +170,12 @@ function Get-StagedArtifactName {
 
   switch -Regex ($ArtifactName) {
     '^latest\.json$' { return 'latest.json' }
-    '\.exe\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe.sig" }
-    '\.exe$' { return "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe" }
-    '\.msi\.zip\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip.sig" }
-    '\.msi\.zip$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip" }
-    '\.msi\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.sig" }
-    '\.msi$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi" }
+    '\.exe\.sig$' { return "Miko_${appVersion}_windows_x64_nsis.exe.sig" }
+    '\.exe$' { return "Miko_${appVersion}_windows_x64_nsis.exe" }
+    '\.msi\.zip\.sig$' { return "Miko_${appVersion}_windows_x64_msi.msi.zip.sig" }
+    '\.msi\.zip$' { return "Miko_${appVersion}_windows_x64_msi.msi.zip" }
+    '\.msi\.sig$' { return "Miko_${appVersion}_windows_x64_msi.msi.sig" }
+    '\.msi$' { return "Miko_${appVersion}_windows_x64_msi.msi" }
     default { return $ArtifactName }
   }
 }
@@ -324,6 +326,7 @@ if ($null -ne $TauriArgs) {
 
 Write-Step "Building Windows desktop app for $targetTriple"
 Write-Step "Windows bundle: $windowsBundle"
+$buildStartedAt = Get-Date
 
 Push-Location $desktopDir
 try {
@@ -346,7 +349,15 @@ $bundleRoots = @(
   (Join-Path $tauriTargetDir 'release\bundle')
 )
 
-$artifactPatterns = @('*.exe', '*.exe.sig', '*.msi', '*.msi.sig', '*.msi.zip', '*.msi.zip.sig', 'latest.json')
+$artifactPatterns = if ($windowsBundle -eq 'nsis') { @('*.exe') } else { @('*.msi') }
+if ($hasTauriSigningKey) {
+  if ($windowsBundle -eq 'nsis') {
+    $artifactPatterns += '*.exe.sig'
+  } else {
+    $artifactPatterns += @('*.msi.sig', '*.msi.zip', '*.msi.zip.sig')
+  }
+  $artifactPatterns += 'latest.json'
+}
 $copiedArtifacts = New-Object System.Collections.Generic.List[string]
 
 foreach ($root in $bundleRoots) {
@@ -355,7 +366,8 @@ foreach ($root in $bundleRoots) {
   }
 
   foreach ($pattern in $artifactPatterns) {
-    $artifacts = Get-ChildItem -Path $root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
+    $artifacts = Get-ChildItem -Path $root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -ge $buildStartedAt }
     foreach ($artifact in $artifacts) {
       $destinationName = Get-StagedArtifactName -ArtifactName $artifact.Name
       $destination = Join-Path $activeOutputDir $destinationName
@@ -369,8 +381,8 @@ foreach ($root in $bundleRoots) {
 
 if ($env:LOCAL_UPDATE_ENDPOINT) {
   $latestPath = Join-Path $activeOutputDir 'latest.json'
-  $nsisArtifact = Join-Path $activeOutputDir "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe"
-  $nsisSignature = Join-Path $activeOutputDir "Claude-Code-Haha_${appVersion}_windows_x64_nsis.exe.sig"
+  $nsisArtifact = Join-Path $activeOutputDir "Miko_${appVersion}_windows_x64_nsis.exe"
+  $nsisSignature = Join-Path $activeOutputDir "Miko_${appVersion}_windows_x64_nsis.exe.sig"
   if ((-not (Test-Path $latestPath)) -and (Test-Path $nsisArtifact) -and (Test-Path $nsisSignature)) {
     $artifactName = Split-Path -Leaf $nsisArtifact
     $latestManifest = @{
@@ -390,15 +402,19 @@ if ($env:LOCAL_UPDATE_ENDPOINT) {
   }
 }
 
-$msiInstaller = Get-LatestArtifact -SearchRoots @(
-  (Join-Path $tauriTargetDir "$targetTriple\release\bundle\msi"),
-  (Join-Path $tauriTargetDir 'release\bundle\msi')
-) -Patterns @('*.msi')
-
-$nsisInstaller = Get-LatestArtifact -SearchRoots @(
-  (Join-Path $tauriTargetDir "$targetTriple\release\bundle\nsis"),
-  (Join-Path $tauriTargetDir 'release\bundle\nsis')
-) -Patterns @('*.exe')
+$msiInstaller = $null
+$nsisInstaller = $null
+if ($windowsBundle -eq 'nsis') {
+  $nsisInstaller = Get-LatestArtifact -SearchRoots @(
+    (Join-Path $tauriTargetDir "$targetTriple\release\bundle\nsis"),
+    (Join-Path $tauriTargetDir 'release\bundle\nsis')
+  ) -Patterns @('*.exe') -ModifiedSince $buildStartedAt
+} else {
+  $msiInstaller = Get-LatestArtifact -SearchRoots @(
+    (Join-Path $tauriTargetDir "$targetTriple\release\bundle\msi"),
+    (Join-Path $tauriTargetDir 'release\bundle\msi')
+  ) -Patterns @('*.msi') -ModifiedSince $buildStartedAt
+}
 
 $msiInstallerPath = if ($msiInstaller) { $msiInstaller.FullName } else { 'not found' }
 $nsisInstallerPath = if ($nsisInstaller) { $nsisInstaller.FullName } else { 'not found' }

@@ -1,21 +1,28 @@
 #!/usr/bin/env bun
 /**
- * Release script for kimo Desktop
+ * Release script for Miko Desktop
  *
  * Usage:
- *   bun run scripts/release.ts patch       # 0.1.0 → 0.1.1
- *   bun run scripts/release.ts minor       # 0.1.0 → 0.2.0
- *   bun run scripts/release.ts major       # 0.1.0 → 1.0.0
- *   bun run scripts/release.ts 2.0.0       # explicit version
+ *   bun run scripts/release.ts patch       # 1.3.0 -> 1.3.1
+ *   bun run scripts/release.ts minor       # 1.3.0 -> 1.4.0
+ *   bun run scripts/release.ts major       # 1.3.0 -> 2.0.0
+ *   bun run scripts/release.ts 1.3.0       # explicit version
  *   bun run scripts/release.ts patch --dry  # preview without changes
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { assertReleaseVersion, type ReleaseVersionPolicy } from './release-version.js'
 
 const root = path.resolve(import.meta.dir, '..')
 
 const VERSION_FILES = [
+  {
+    path: path.join(root, 'package.json'),
+    update(content: string, version: string) {
+      return content.replace(/"version":\s*"[^"]*"/, `"version": "${version}"`)
+    },
+  },
   {
     path: path.join(root, 'desktop/package.json'),
     update(content: string, version: string) {
@@ -45,6 +52,12 @@ function getCurrentVersion(): string {
 
 function getReleaseNotesPath(version: string): string {
   return path.join(root, 'release-notes', `v${version}.md`)
+}
+
+function getVersionPolicy(): ReleaseVersionPolicy {
+  return JSON.parse(
+    readFileSync(path.join(root, 'release/version-policy.json'), 'utf-8'),
+  ) as ReleaseVersionPolicy
 }
 
 function bumpVersion(current: string, bump: string): string {
@@ -93,25 +106,39 @@ if (!bumpArg) {
 const current = getCurrentVersion()
 const next = bumpVersion(current, bumpArg)
 const releaseNotesPath = getReleaseNotesPath(next)
+const policy = getVersionPolicy()
+
+try {
+  assertReleaseVersion(current, next, policy)
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
+  process.exit(1)
+}
 
 console.log(`\n  Version: ${current} → ${next}`)
 console.log(`  Tag:     v${next}`)
 console.log(`  Notes:   ${path.relative(root, releaseNotesPath)}`)
 console.log(`  Dry run: ${dryRun}\n`)
 
+if (!existsSync(releaseNotesPath)) {
+  console.error(`Missing release notes file: ${path.relative(root, releaseNotesPath)}`)
+  console.error(`Create it before releasing so GitHub Release can use it automatically.`)
+  process.exit(1)
+}
+
+const existingTag = await run(['git', 'tag', '--list', `v${next}`])
+if (existingTag) {
+  console.error(`Tag v${next} already exists. Refusing to recreate or overwrite a release tag.`)
+  process.exit(1)
+}
+
 if (dryRun) {
   console.log('Files that would be updated:')
   for (const file of VERSION_FILES) {
     console.log(`  - ${path.relative(root, file.path)}`)
   }
-  console.log(`  - ${path.relative(root, releaseNotesPath)} ${existsSync(releaseNotesPath) ? '(present)' : '(missing)'}`)
+  console.log(`  - ${path.relative(root, releaseNotesPath)} (present)`)
   process.exit(0)
-}
-
-if (!existsSync(releaseNotesPath)) {
-  console.error(`Missing release notes file: ${path.relative(root, releaseNotesPath)}`)
-  console.error(`Create it before releasing so GitHub Release can use it automatically.`)
-  process.exit(1)
 }
 
 // Update version in all files
@@ -131,10 +158,12 @@ console.log('  Creating git commit...')
 await run([
   'git',
   'add',
+  'package.json',
   'desktop/package.json',
   'desktop/src-tauri/tauri.conf.json',
   'desktop/src-tauri/Cargo.toml',
   'desktop/src-tauri/Cargo.lock',
+  'release/version-policy.json',
   path.relative(root, releaseNotesPath),
 ])
 await run(['git', 'commit', '-m', `release: v${next}`])

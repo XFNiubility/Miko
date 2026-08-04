@@ -33,7 +33,7 @@ const sidecarName = `claude-sidecar-${targetTriple}${process.platform === 'win32
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/claude-sidecar.ts'),
   outfileBase: path.join(binariesDir, sidecarName),
-  productName: 'Claude Code Sidecar',
+  productName: 'Miko Sidecar',
   bunTarget,
 })
 

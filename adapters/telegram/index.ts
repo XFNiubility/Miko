@@ -1,5 +1,5 @@
 /**
- * Telegram Adapter for Claude Code Desktop
+ * Telegram Adapter for Miko Desktop
  *
  * 基于 grammY 的轻量 Telegram Bot，直连服务端 /ws/:sessionId。
  * 启动：TELEGRAM_BOT_TOKEN=xxx bun run telegram/index.ts

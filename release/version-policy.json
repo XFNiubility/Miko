@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "product": "Miko",
+  "historicalPublicVersionFloor": "1.2.0",
+  "canonicalTagPrefix": "v",
+  "artifactPrefix": "Miko_"
+}

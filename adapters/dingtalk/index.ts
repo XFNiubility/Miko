@@ -1,5 +1,5 @@
 /**
- * DingTalk Adapter for Claude Code Desktop.
+ * DingTalk Adapter for Miko Desktop.
  *
  * Uses DingTalk Stream to receive bot messages without a public webhook.
  * The desktop Settings page stores clientId/clientSecret via QR registration.

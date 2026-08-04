@@ -1,5 +1,5 @@
 /**
- * Claude Code Desktop App — HTTP + WebSocket Server
+ * Miko Desktop App — HTTP + WebSocket Server
  *
  * 为桌面端 UI 提供 REST API 和 WebSocket 实时通信。
  * 读写与 CLI 完全相同的文件系统，确保 CLI/UI 数据互通。

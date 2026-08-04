@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "miko"
-version = "0.3.4"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "portable-pty",

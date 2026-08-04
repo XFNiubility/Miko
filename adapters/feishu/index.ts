@@ -1,5 +1,5 @@
 /**
- * 飞书 (Feishu/Lark) Adapter for Claude Code Desktop
+ * 飞书 (Feishu/Lark) Adapter for Miko Desktop
  *
  * 基于 @larksuiteoapi/node-sdk 的轻量飞书 Bot，直连服务端 /ws/:sessionId。
  * 使用 WebSocket 长连接接收事件，无需公网地址。

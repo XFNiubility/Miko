@@ -1,6 +1,6 @@
 {
   "name": "kimo",
-  "version": "0.1.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -12,7 +12,12 @@
     "marketplace:local": "bun run scripts/local-marketplace-server.ts",
     "marketplace:sign": "bun run scripts/sign-marketplace-catalog.ts",
     "updates:local": "bun run scripts/local-update-server.ts",
-    "check:native": "cd desktop && bun run build:sidecars && cd src-tauri && cargo check"
+    "check:server": "bun test src scripts/local-marketplace-server.rbac.test.ts scripts/marketplace-auth.test.ts",
+    "check:desktop": "cd desktop && bun run lint && bun run test && bun run build",
+    "check:persistence-upgrade": "bun test src/utils/kimoPaths.layering.test.ts src/server/services/settingsService.defaultWorkspace.test.ts src/server/services/sessionService.workspace.test.ts src/services/mcp/config.miko.test.ts src/services/marketplaceService.test.ts scripts/marketplace-auth.test.ts",
+    "check:release": "bun test scripts/release-version.test.ts scripts/release-readiness.test.ts scripts/local-update-server.test.ts scripts/sign-marketplace-catalog.test.ts",
+    "check:native": "bun run scripts/check-native.ts",
+    "verify": "bun run check:server && bun run check:desktop && bun run check:persistence-upgrade && bun run check:release && bun run check:native"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",

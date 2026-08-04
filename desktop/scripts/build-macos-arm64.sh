@@ -283,7 +283,7 @@ sign_canonical_app_bundle() {
 
 if [[ -n "${LATEST_APP}" ]]; then
   # Normalize the Tauri-produced app in place before copying it anywhere.
-  # Without this, opening target/.../bundle/macos/Claude Code Haha.app directly
+  # Without this, opening the Tauri-produced Miko.app bundle directly
   # uses the executable's ad-hoc signing identifier instead of the app bundle id,
   # which makes macOS notification authorization behave like a different app.
   sign_canonical_app_bundle "${LATEST_APP}"
@@ -298,7 +298,7 @@ if [[ -n "${LATEST_APP}" ]]; then
   cp -R "${LATEST_APP}" "${CANONICAL_OUTPUT_DIR}/"
   sign_canonical_app_bundle "${CANONICAL_OUTPUT_DIR}/${APP_BUNDLE_NAME}"
   rm -f "${CANONICAL_OUTPUT_DIR}/"*.dmg
-  CANONICAL_DMG="${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Claude Code Haha_0.1.0_aarch64.dmg}")"
+  CANONICAL_DMG="${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Miko_0.1.0_aarch64.dmg}")"
   build_canonical_dmg \
     "${CANONICAL_OUTPUT_DIR}/${APP_BUNDLE_NAME}" \
     "${CANONICAL_DMG}"
