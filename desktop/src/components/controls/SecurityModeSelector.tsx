@@ -62,13 +62,13 @@ export function SecurityModeSelector({ compact = false }: Props = {}) {
     : 'gap-1.5 rounded-full px-2.5 py-1.5 text-xs'
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen(!open)}
         aria-haspopup="menu"
         aria-expanded={open}
         title={enabled ? '探索模式已开启' : '探索模式'}
-        className={`flex items-center font-medium transition-colors ${buttonClass} ${
+        className={`flex items-center whitespace-nowrap font-medium transition-colors ${buttonClass} ${
           enabled
             ? 'bg-[var(--color-error-container)] text-[var(--color-error)]'
             : 'bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'

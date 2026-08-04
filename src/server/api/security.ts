@@ -199,7 +199,14 @@ async function listResources(): Promise<Response> {
 
 async function queueResourceExtraction(resourceId: string): Promise<void> {
   await resourceExtractionService.queueExtraction(resourceId).catch(() => undefined)
-  void resourceExtractionService.extract(resourceId).catch(() => undefined)
+  void (async () => {
+    try {
+      const extraction = await resourceExtractionService.extract(resourceId)
+      await securityResourceService.syncSessionResourceExtractionTask(resourceId, extraction)
+    } catch (error) {
+      await securityResourceService.syncSessionResourceExtractionTask(resourceId, null, error).catch(() => undefined)
+    }
+  })()
 }
 
 async function getResource(resourceId: string): Promise<Response> {
@@ -296,8 +303,14 @@ async function getResourceExtraction(resourceId: string): Promise<Response> {
 }
 
 async function extractResource(resourceId: string): Promise<Response> {
-  const extraction = await resourceExtractionService.extract(resourceId)
-  return Response.json({ extraction })
+  try {
+    const extraction = await resourceExtractionService.extract(resourceId)
+    await securityResourceService.syncSessionResourceExtractionTask(resourceId, extraction)
+    return Response.json({ extraction })
+  } catch (error) {
+    await securityResourceService.syncSessionResourceExtractionTask(resourceId, null, error).catch(() => undefined)
+    throw error
+  }
 }
 
 async function getResourceReferences(resourceId: string): Promise<Response> {

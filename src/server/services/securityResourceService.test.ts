@@ -159,8 +159,25 @@ describe('securityResourceService', () => {
     expect(tasks).toHaveLength(1)
     expect(tasks[0]).toMatchObject({
       type: 'resource_from_session',
-      status: 'done',
+      status: 'running',
     })
     expect(tasks[0].targetRefs[0]).toMatchObject({ type: 'resource', id: resource.meta.id })
+
+    await securityResourceService.syncSessionResourceExtractionTask(resource.meta.id, {
+      status: 'done',
+      phase: 'done',
+      summary: '已整理目标与测试范围',
+      content: '# 目标\n- example.net\n- 10.0.0.9',
+      items: [],
+      warnings: [],
+      updatedAt: Date.now(),
+    })
+
+    const completedTasks = await sessionTaskService.listTasks(sessionId)
+    expect(completedTasks[0].status).toBe('done')
+    expect(completedTasks[0].events.at(-1)).toMatchObject({
+      phase: 'done',
+      message: 'Agent 已完成前置资源整理',
+    })
   })
 })

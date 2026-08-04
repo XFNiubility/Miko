@@ -588,7 +588,7 @@ export class ResourceExtractionService {
         ...input.readableReferences.map((ref) => `- ${ref.type}: ${ref.value}\n\n  ${ref.summary}${ref.content ? `\n\n\`\`\`\n${ref.content}\n\`\`\`` : ''}`),
       ].filter(Boolean).join('\n'),
       items,
-      warnings: [...new Set(warnings)],
+      warnings: [...new Set([...warnings, '未能调用可用模型，当前显示基础整理结果'])],
       updatedAt: Date.now(),
     }
   }

@@ -567,21 +567,74 @@ export class SecurityResourceService {
     })
     await Promise.all(taskRecords.map((task) => task
       ? sessionTaskService.updateTask(task.sessionId, task.id, {
-          status: 'done',
+          status: 'running',
           targetRefs: [{ type: 'resource', id: resource.meta.id, title: resource.meta.title }],
           events: [
             ...task.events,
             {
               timestamp: new Date().toISOString(),
               level: 'info',
-              phase: 'done',
-              message: '已生成资源，后台解析状态可在资源详情查看',
+              phase: 'extracting',
+              message: '原始材料已保存，正在由 Agent 整理为可复用前置资源',
             },
           ],
         }).catch(() => undefined)
       : undefined,
     ))
     return resource
+  }
+
+  async syncSessionResourceExtractionTask(
+    resourceId: string,
+    extraction: ResourceExtractionRecord | null,
+    error?: unknown,
+  ): Promise<void> {
+    const resource = await this.getResource(resourceId)
+    if (!resource || resource.meta.sourceType !== 'session_ref') return
+
+    const failedMessage = error instanceof Error ? error.message : String(error ?? '')
+    const taskStatus = failedMessage || extraction?.status === 'failed'
+      ? 'failed'
+      : extraction?.status === 'waiting_for_permission'
+        ? 'waiting_for_permission'
+        : extraction?.status === 'done'
+          ? 'done'
+          : 'running'
+    const phase = failedMessage ? 'failed' : extraction?.phase || extraction?.status || 'extracting'
+    const usedFallback = extraction?.warnings.includes('未能调用可用模型，当前显示基础整理结果') ?? false
+    const message = taskStatus === 'done'
+      ? usedFallback
+        ? '已生成基础整理结果；当前未调用可用模型'
+        : 'Agent 已完成前置资源整理'
+      : taskStatus === 'waiting_for_permission'
+        ? 'Agent 已发现需要用户授权读取的引用'
+        : taskStatus === 'failed'
+          ? `前置资源整理失败${failedMessage ? `：${failedMessage.slice(0, 300)}` : ''}`
+          : 'Agent 正在整理前置资源'
+    const sessionIds = resource.meta.sourceRefs
+      ?.filter((ref) => ref.type === 'session' && ref.id)
+      .map((ref) => ref.id!) ?? []
+
+    await Promise.all(sessionIds.map(async (sessionId) => {
+      const tasks = await sessionTaskService.listTasks(sessionId)
+      const task = tasks.find((item) => (
+        item.type === 'resource_from_session'
+        && item.targetRefs.some((ref) => ref.type === 'resource' && ref.id === resourceId)
+      ))
+      if (!task) return
+      await sessionTaskService.updateTask(sessionId, task.id, {
+        status: taskStatus,
+        events: [
+          ...task.events,
+          {
+            timestamp: new Date().toISOString(),
+            level: taskStatus === 'failed' ? 'error' : taskStatus === 'waiting_for_permission' ? 'warning' : 'info',
+            phase,
+            message,
+          },
+        ],
+      })
+    }))
   }
 
   async getPromptResources(resourceIds: string[]): Promise<SecurityResourcePromptItem[]> {

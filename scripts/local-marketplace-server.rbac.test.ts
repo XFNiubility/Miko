@@ -9,6 +9,7 @@ const storageRoot = mkdtempSync(join(tmpdir(), 'miko-marketplace-rbac-'))
 const port = '8797'
 const originalPrivateKey = process.env.KIMO_RESOURCE_SIGNATURE_PRIVATE_KEY
 const originalPublicKey = process.env.KIMO_RESOURCE_SIGNATURE_PUBLIC_KEY
+const originalTestAuth = process.env.MARKETPLACE_ENABLE_TEST_AUTH
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
 
 process.env.MARKETPLACE_STORAGE_ROOT = storageRoot
@@ -20,13 +21,15 @@ process.env.KIMO_RESOURCE_SIGNATURE_PRIVATE_KEY = Buffer.from(
 process.env.KIMO_RESOURCE_SIGNATURE_PUBLIC_KEY = Buffer.from(
   publicKey.export({ type: 'spki', format: 'der' }),
 ).toString('base64')
+process.env.MARKETPLACE_ENABLE_TEST_AUTH = '1'
 
-const { startLocalMarketplaceServer } = await import('./local-marketplace-server.ts')
+const { closeLocalMarketplaceAuthStoreForTests, startLocalMarketplaceServer } = await import('./local-marketplace-server.ts')
 const server = startLocalMarketplaceServer()
 const baseUrl = `http://127.0.0.1:${port}`
 
 afterAll(() => {
   server.stop(true)
+  closeLocalMarketplaceAuthStoreForTests()
   rmSync(storageRoot, { recursive: true, force: true })
   if (originalPrivateKey === undefined) {
     delete process.env.KIMO_RESOURCE_SIGNATURE_PRIVATE_KEY
@@ -37,6 +40,11 @@ afterAll(() => {
     delete process.env.KIMO_RESOURCE_SIGNATURE_PUBLIC_KEY
   } else {
     process.env.KIMO_RESOURCE_SIGNATURE_PUBLIC_KEY = originalPublicKey
+  }
+  if (originalTestAuth === undefined) {
+    delete process.env.MARKETPLACE_ENABLE_TEST_AUTH
+  } else {
+    process.env.MARKETPLACE_ENABLE_TEST_AUTH = originalTestAuth
   }
 })
 
@@ -170,6 +178,57 @@ describe('local marketplace RBAC', () => {
       headers: { 'x-miko-role': 'admin', 'x-miko-actor': 'admin-one' },
     })
     expect(admin.status).toBe(200)
+  })
+
+  it('requires ordinary users to receive publisher approval before uploading', async () => {
+    const email = 'ordinary-user@example.test'
+    const password = 'ordinary user password 123'
+    const register = await request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, displayName: 'Ordinary User', password }),
+    })
+    expect(register.status).toBe(201)
+
+    const login = await request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+    expect(login.status).toBe(200)
+    const setCookies = login.headers.getSetCookie()
+    const cookie = setCookies.map(value => value.split(';')[0]).join('; ')
+    const csrf = decodeURIComponent(cookie.match(/(?:^|; )miko_csrf=([^;]+)/)?.[1] || '')
+    expect(cookie).toContain('miko_session=')
+    expect(csrf).not.toBe('')
+
+    expect((await request('/publish', { headers: { cookie } })).status).toBe(403)
+
+    const application = await request('/api/publisher/application', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        publisherName: 'Ordinary Security Publisher',
+        description: 'Publishes reviewed security resources.',
+        websiteUrl: 'https://example.test',
+        resourceFocus: 'security testing',
+      }),
+    })
+    expect(application.status).toBe(201)
+    const applicationBody = await application.json() as { application: { id: string } }
+    expect((await request('/publish', { headers: { cookie } })).status).toBe(403)
+
+    const approve = await request(`/api/admin/publisher-applications/${applicationBody.application.id}/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-miko-role': 'admin',
+        'x-miko-actor': 'admin-one',
+      },
+      body: JSON.stringify({ notes: 'Publisher identity reviewed' }),
+    })
+    expect(approve.status).toBe(200)
+    expect((await request('/publish', { headers: { cookie } })).status).toBe(200)
   })
 
   it('does not allow an approved resource version to be overwritten', async () => {

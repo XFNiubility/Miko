@@ -6,6 +6,7 @@ import { selectNativeFileAttachments } from '../lib/composerAttachments'
 import { sessionsApi } from '../api/sessions'
 import type { SessionListItem } from '../types/session'
 import type { ResourceExtraction, ResourceReference, SecurityResource, SecurityResourceInput, SecurityResourceKind, SecurityResourceMeta, SecurityResourceUploadFile } from '../api/security'
+import { buildSecurityResourcePresentation } from './securityResourcePresentation'
 
 const KIND_LABEL: Record<SecurityResourceKind, string> = {
   asset_note: '资产清单',
@@ -378,6 +379,14 @@ function ExtractionSection({
       ) : (
         <p className="text-sm text-[var(--color-text-tertiary)]">保存资源后会自动提取；也可以手动重新提取。</p>
       )}
+      {extraction?.content && (
+        <div className="mt-4">
+          <h4 className="mb-2 text-xs font-semibold text-[var(--color-text-tertiary)]">整理后的前置资源</h4>
+          <pre className="whitespace-pre-wrap rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4 font-mono text-xs leading-5 text-[var(--color-text-primary)]">
+            {extraction.content}
+          </pre>
+        </div>
+      )}
       {extraction?.items && extraction.items.length > 0 && (
         <div className="mt-3 space-y-1.5">
           {extraction.items.slice(0, 8).map((item, index) => (
@@ -516,6 +525,8 @@ function ResourceDetail({
     )
   }
 
+  const presentation = buildSecurityResourcePresentation(resource, extraction)
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="border-b border-[var(--color-border)] px-5 py-4">
@@ -577,12 +588,14 @@ function ResourceDetail({
             <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--color-text-secondary)]">{resource.meta.summary}</p>
           </section>
         )}
-        <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-[var(--color-text-tertiary)]">正文</h3>
-          <pre className="whitespace-pre-wrap rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4 font-mono text-xs leading-5 text-[var(--color-text-primary)]">
-            {resource.content || '暂无正文'}
+        <details open={resource.meta.sourceType !== 'session_ref'}>
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-normal text-[var(--color-text-tertiary)]">
+            {presentation.sourceLabel}
+          </summary>
+          <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4 font-mono text-xs leading-5 text-[var(--color-text-primary)]">
+            {presentation.sourceContent || '暂无内容'}
           </pre>
-        </section>
+        </details>
         {resource.files.length > 0 && (
           <section className="mt-5">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-normal text-[var(--color-text-tertiary)]">文件</h3>

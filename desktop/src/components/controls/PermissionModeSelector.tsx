@@ -173,7 +173,7 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
   )
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen(!open)}
         aria-label={MODE_LABELS[currentMode]}
@@ -181,7 +181,7 @@ export function PermissionModeSelector({ workDir: workDirProp, compact = false, 
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         title={compact ? MODE_LABELS[currentMode] : undefined}
-        className={`flex items-center bg-[var(--color-surface-container-low)] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${
+        className={`flex items-center whitespace-nowrap bg-[var(--color-surface-container-low)] font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${
           compactButtonClass
         }`}
       >

@@ -51,6 +51,7 @@ describe('resourceExtractionService', () => {
 
     expect(extraction?.status).toBe('waiting_for_permission')
     expect(extraction?.summary).toBe('测试范围说明')
+    expect(extraction?.warnings).toContain('未能调用可用模型，当前显示基础整理结果')
     expect(references.some((ref) => ref.type === 'domain' && ref.value === 'example.com')).toBe(true)
     expect(references.some((ref) => ref.type === 'local_directory' && ref.permissionStatus === 'pending')).toBe(true)
     await expect(

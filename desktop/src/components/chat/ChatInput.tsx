@@ -27,6 +27,7 @@ import { useAgentSessionStore } from '../../stores/agentSessionStore'
 import { AgentSelectorPanel } from './AgentSelectorPanel'
 import { LocalSlashCommandPanel, type LocalSlashCommandName } from './LocalSlashCommandPanel'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
+import { shouldCompactChatToolbar } from './chatInputLayout'
 import {
   getLocalizedFallbackCommands,
   filterSlashCommands,
@@ -107,6 +108,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const [launchUseWorktree, setLaunchUseWorktree] = useState(false)
   const [launchReady, setLaunchReady] = useState(true)
   const [launchTransitioning, setLaunchTransitioning] = useState(false)
+  const [toolbarCompact, setToolbarCompact] = useState(false)
   const composingRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -176,8 +178,8 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
   const isHeroComposer = variant === 'hero' && !isMemberSession && !compact
   const resolvedWorkDir = activeSession?.workDir || gitInfo?.workDir || undefined
   const showLaunchControls = !isMemberSession && messageCount === 0
-  const useCompactControls = compact || isMobileComposer
-  const iconOnlyAction = compact || isMobileComposer
+  const useCompactControls = compact || isMobileComposer || toolbarCompact
+  const iconOnlyAction = useCompactControls
   const activeLaunchWorkDir = showLaunchControls ? (launchWorkDir || resolvedWorkDir || '') : (resolvedWorkDir || '')
   const embedLaunchControlsInHero = isHeroComposer && !useCompactControls && showLaunchControls
   const pendingSlashUiAction = !isMemberSession && input.trim().startsWith('/')
@@ -195,6 +197,22 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
     [attachments, workspaceReferences],
   )
   const slashCommandCount = slashCommands.length
+
+  useEffect(() => {
+    const panel = panelRef.current
+    if (!panel) return
+
+    const update = (width: number) => setToolbarCompact(shouldCompactChatToolbar(width))
+    update(panel.clientWidth)
+    if (typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? panel.clientWidth
+      update(width)
+    })
+    observer.observe(panel)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     inputRef.current = input
@@ -1081,7 +1099,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
             : `mt-2 flex items-center justify-between border-t border-[var(--color-border-separator)] ${
               useCompactControls ? '-mx-3 -mb-3 gap-2 px-2.5 py-2' : '-mx-4 -mb-4 px-3 py-3'
             }`}>
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
               {!isMemberSession && (
                 <>
                   <div ref={plusMenuRef} className="relative">
@@ -1127,7 +1145,7 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
               )}
             </div>
 
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 shrink-0 items-center gap-2">
               {!isMemberSession && activeTabId && (
                 <ContextUsageIndicator
                   sessionId={activeTabId}
@@ -1412,7 +1430,7 @@ function SessionResourceLinkButton({
           void fetchResources()
           void fetchSessionResources(sessionId)
         }}
-        className={`inline-flex items-center gap-1.5 rounded-[var(--radius-md)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] ${
+        className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-md)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] ${
           compact ? 'h-8 px-2 text-xs' : 'px-2 py-1.5 text-xs'
         }`}
         title="关联资源"

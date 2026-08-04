@@ -16,11 +16,15 @@ import { unzipFile } from '../src/utils/dxt/zip.js'
 import { McpJsonConfigSchema } from '../src/services/mcp/types.js'
 import { signResourceData } from '../src/services/resourceSignature.js'
 import { renderUnifiedHomePage, renderUnifiedMarketplacePage } from './local-marketplace-ui.ts'
+import {
+  createMarketplaceAuthStore,
+  type MarketplaceActor,
+  type MarketplaceRole,
+} from './marketplace-auth.ts'
 
 type ResourceType = 'skill' | 'mcp' | 'tool' | 'agent'
 type ReviewStatus = 'pending_review' | 'approved' | 'rejected'
 type PublishedStatus = 'published' | 'taken_down'
-type MarketplaceRole = 'anonymous' | 'publisher' | 'reviewer' | 'admin'
 
 type CatalogResource = {
   id: string
@@ -112,66 +116,83 @@ const storageRoot = resolve(
 )
 const host = process.env.MARKETPLACE_HOST || '127.0.0.1'
 const port = Number.parseInt(process.env.MARKETPLACE_PORT || '8788', 10)
+const allowedOrigin = process.env.MARKETPLACE_ALLOWED_ORIGIN?.trim()
+const maxUploadBytes = Number.parseInt(process.env.MARKETPLACE_MAX_UPLOAD_BYTES || `${20 * 1024 * 1024}`, 10)
 
 const submissionsDir = join(storageRoot, 'submissions')
 const publishedPackagesDir = join(storageRoot, 'packages')
 const catalogDir = join(storageRoot, 'catalog')
 const publishedIndexFile = join(catalogDir, 'published.json')
 const auditLogFile = join(storageRoot, 'audit', 'audit.log')
+const authStore = createMarketplaceAuthStore(join(storageRoot, 'auth', 'marketplace.db'))
 
 function json(value: unknown, status = 200) {
+  const corsHeaders = allowedOrigin
+    ? { 'access-control-allow-origin': allowedOrigin, 'access-control-allow-credentials': 'true', vary: 'Origin' }
+    : {}
   return new Response(JSON.stringify(value, null, 2), {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'access-control-allow-origin': '*',
+      ...corsHeaders,
     },
   })
 }
 
-type MarketplaceActor = {
-  role: MarketplaceRole
-  actorId: string
-}
-
-function getMarketplaceActor(req: Request): MarketplaceActor {
-  const rawRole = req.headers.get('x-miko-role')?.trim().toLowerCase()
-  const role: MarketplaceRole = rawRole === 'publisher' || rawRole === 'reviewer' || rawRole === 'admin'
-    ? rawRole
-    : 'anonymous'
-  const actorId = asString(req.headers.get('x-miko-actor')) || (role === 'anonymous' ? 'anonymous' : `local-${role}`)
-  return { role, actorId }
+function jsonWithHeaders(value: unknown, headers: Headers, status = 200) {
+  const response = json(value, status)
+  for (const [name, headerValue] of headers) response.headers.append(name, headerValue)
+  return response
 }
 
 function canAccess(actor: MarketplaceActor, allowed: MarketplaceRole[]) {
-  return allowed.includes(actor.role)
+  return actor.roles.some(role => allowed.includes(role))
 }
 
 function requireRole(req: Request, allowed: MarketplaceRole[]) {
-  const actor = getMarketplaceActor(req)
+  const auth = authStore.authenticate(req)
+  if (!auth) {
+    return {
+      response: json({ error: 'Authentication required', requiredRoles: allowed }, 401),
+    }
+  }
+  const actor = auth.actor
   if (canAccess(actor, allowed)) return { actor }
   return {
     actor,
     response: json({
-      error: actor.role === 'anonymous' ? 'Authentication required' : 'Forbidden',
+      error: 'Forbidden',
       requiredRoles: allowed,
-      role: actor.role,
-    }, actor.role === 'anonymous' ? 401 : 403),
+      roles: actor.roles,
+    }, 403),
   }
 }
 
+function requireCsrf(req: Request, actor: MarketplaceActor) {
+  if (authStore.csrfValid(req, { actor })) return null
+  return json({ error: 'Invalid or missing CSRF token' }, 403)
+}
+
 function text(value: string, status = 200, contentType = 'text/plain; charset=utf-8') {
+  const corsHeaders = allowedOrigin
+    ? { 'access-control-allow-origin': allowedOrigin, 'access-control-allow-credentials': 'true', vary: 'Origin' }
+    : {}
   return new Response(value, {
     status,
     headers: {
       'content-type': contentType,
-      'access-control-allow-origin': '*',
+      ...corsHeaders,
     },
   })
 }
 
 function badRequest(message: string) {
   return json({ error: message }, 400)
+}
+
+function parseMarketplaceRoles(value: unknown): MarketplaceRole[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((role): role is MarketplaceRole => role === 'publisher' || role === 'reviewer' || role === 'admin')
 }
 
 function nowIso() {
@@ -558,7 +579,7 @@ async function createSubmissionFromZip(
     version: manifest.version,
     submittedBy,
     actorId: actor?.actorId,
-    role: actor?.role,
+    roles: actor?.roles,
   })
   return record
 }
@@ -574,19 +595,24 @@ async function handleCreateSubmission(req: Request, actor: MarketplaceActor) {
   if (!(file instanceof File)) {
     return badRequest('Missing package file')
   }
+  if (file.size > maxUploadBytes) {
+    return badRequest(`Package file exceeds the ${Math.floor(maxUploadBytes / 1024 / 1024)} MB upload limit`)
+  }
   if (!file.name.toLowerCase().endsWith('.zip')) {
     return badRequest('Package file must be a .zip archive')
   }
 
-  const submittedBy = asString(form.get('submittedBy')) || actor.actorId
   const zipData = new Uint8Array(await file.arrayBuffer())
-  const record = await createSubmissionFromZip(zipData, file.name, submittedBy, actor)
+  const record = await createSubmissionFromZip(zipData, file.name, actor.actorId, actor)
   return json({ submission: record }, 201)
 }
 
 async function approveSubmission(id: string, reviewer?: string, notes?: string, actor?: MarketplaceActor) {
   const record = await readSubmission(id)
   if (!record) return null
+  if (actor?.actorId && record.submittedBy === actor.actorId) {
+    throw new Error('A publisher cannot review their own submission')
+  }
   if (record.status !== 'pending_review') {
     throw new Error(`Submission is already ${record.status}`)
   }
@@ -631,7 +657,7 @@ async function approveSubmission(id: string, reviewer?: string, notes?: string, 
     version: record.resource.version,
     reviewer,
     actorId: actor?.actorId,
-    role: actor?.role,
+    roles: actor?.roles,
   })
   return record
 }
@@ -639,6 +665,9 @@ async function approveSubmission(id: string, reviewer?: string, notes?: string, 
 async function rejectSubmission(id: string, reviewer?: string, notes?: string, actor?: MarketplaceActor) {
   const record = await readSubmission(id)
   if (!record) return null
+  if (actor?.actorId && record.submittedBy === actor.actorId) {
+    throw new Error('A publisher cannot review their own submission')
+  }
   if (record.status !== 'pending_review') {
     throw new Error(`Submission is already ${record.status}`)
   }
@@ -654,7 +683,7 @@ async function rejectSubmission(id: string, reviewer?: string, notes?: string, a
     version: record.resource.version,
     reviewer,
     actorId: actor?.actorId,
-    role: actor?.role,
+    roles: actor?.roles,
   })
   return record
 }
@@ -687,7 +716,7 @@ async function updatePublishedResourceStatus(
     previousStatus,
     nextStatus: status,
     actorId: actor.actorId,
-    role: actor.role,
+    roles: actor.roles,
     notes,
   })
   return record
@@ -754,8 +783,8 @@ function renderShell(title: string, body: string, script = '', options: { audien
     .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; align-items:center; }
     .form-grid { display:grid; grid-template-columns:minmax(240px,1fr) minmax(180px,240px) auto; gap:10px; align-items:end; }
     label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:800; }
-    input,textarea { width:100%; border:1px solid var(--line); border-radius:8px; background:white; color:var(--text); padding:8px 10px; outline:none; }
-    input:focus,textarea:focus { border-color:#8aa4ff; box-shadow:0 0 0 3px rgba(36,84,214,.12); }
+    input,textarea,select { width:100%; border:1px solid var(--line); border-radius:8px; background:white; color:var(--text); padding:8px 10px; outline:none; }
+    input:focus,textarea:focus,select:focus { border-color:#8aa4ff; box-shadow:0 0 0 3px rgba(36,84,214,.12); }
     .empty { border:1px dashed var(--line); border-radius:8px; background:white; color:var(--muted); padding:36px; text-align:center; }
     .toast { display:none; margin-bottom:14px; border:1px solid var(--line); border-radius:8px; background:white; padding:12px; }
     .toast.show { display:block; }
@@ -778,6 +807,13 @@ function renderShell(title: string, body: string, script = '', options: { audien
     </div>
   </header>
   <main class="page">${body}</main>
+  <script>
+    window.mikoWriteHeaders = function(headers) {
+      const match = document.cookie.match(/(?:^|; )miko_csrf=([^;]*)/)
+      const csrf = match ? decodeURIComponent(match[1]) : ''
+      return Object.assign({}, headers || {}, csrf ? { 'x-csrf-token': csrf } : {})
+    }
+  </script>
   ${script}
 </body>
 </html>`
@@ -906,9 +942,6 @@ function renderPublisherPage() {
           <label>Package zip
             <input name="package" type="file" accept=".zip,application/zip" required />
           </label>
-          <label>Publisher
-            <input name="submittedBy" type="text" placeholder="publisher id" />
-          </label>
           <button class="button" type="submit">Submit for review</button>
         </form>
       </section>
@@ -933,7 +966,7 @@ function renderPublisherPage() {
         const form = new FormData(event.currentTarget)
         const response = await fetch('/api/submissions', {
           method: 'POST',
-          headers: { 'x-miko-role': 'publisher' },
+          headers: window.mikoWriteHeaders(),
           body: form,
         })
         const result = await response.json().catch(() => ({}))
@@ -946,6 +979,25 @@ function renderPublisherPage() {
       })
     </script>`
   return text(renderShell('Publish Resource', body), 200, 'text/html; charset=utf-8')
+}
+
+function renderRegistrationPage() {
+  const body = `<h1>注册资源市场账号</h1>
+    <p class="lead">注册后是普通用户，可以申请发布者资格。审核通过前不能上传资源。</p>
+    <div class="toast" id="toast"></div>
+    <section class="panel" style="max-width:520px"><form id="register" class="rules-list">
+      <label>邮箱<input name="email" type="email" autocomplete="email" required /></label>
+      <label>显示名称<input name="displayName" autocomplete="name" required /></label>
+      <label>密码<input name="password" type="password" minlength="12" autocomplete="new-password" required /></label>
+      <label>确认密码<input name="confirmPassword" type="password" minlength="12" autocomplete="new-password" required /></label>
+      <button class="button" type="submit">注册账号</button>
+      <a class="ghost" href="/login">已有账号，返回登录</a>
+    </form></section>
+    <script>
+      const form=document.getElementById('register');const toast=document.getElementById('toast');
+      form.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));if(d.password!==d.confirmPassword){toast.textContent='两次输入的密码不一致';toast.classList.add('show');return}const r=await fetch('/api/auth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:d.email,displayName:d.displayName,password:d.password})});const v=await r.json().catch(()=>({}));if(!r.ok){toast.textContent=v.error||'注册失败';toast.classList.add('show');return}location.href='/login?registered=1'})
+    </script>`
+  return text(renderShell('注册资源市场账号', body), 200, 'text/html; charset=utf-8')
 }
 
 async function renderReviewPage() {
@@ -986,9 +1038,6 @@ async function renderReviewPage() {
         <label>资源包 zip
           <input name="package" type="file" accept=".zip,application/zip" required />
         </label>
-        <label>提交人
-          <input name="submittedBy" type="text" placeholder="publisher" />
-        </label>
         <button class="button" type="submit">提交审核</button>
       </form>
     </section>
@@ -1004,7 +1053,7 @@ async function renderReviewPage() {
     document.getElementById('upload-form').addEventListener('submit', async event => {
       event.preventDefault()
       const form = new FormData(event.currentTarget)
-      const response = await fetch('/api/submissions', { method: 'POST', body: form })
+      const response = await fetch('/api/submissions', { method: 'POST', headers: window.mikoWriteHeaders(), body: form })
       const result = await response.json().catch(() => ({}))
       if (!response.ok) {
         showToast(result.error || '提交失败')
@@ -1016,10 +1065,11 @@ async function renderReviewPage() {
       button.addEventListener('click', async () => {
         const action = button.getAttribute('data-action')
         const id = button.getAttribute('data-id')
-        const notes = action === 'reject' ? prompt('拒绝原因') || '' : ''
+        const notes = prompt(action === 'reject' ? '拒绝原因' : '审核意见') || ''
+        if (!notes) return
         const response = await fetch('/api/reviews/' + encodeURIComponent(id) + '/' + action, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: window.mikoWriteHeaders({ 'content-type': 'application/json' }),
           body: JSON.stringify({ reviewer: 'local-reviewer', notes })
         })
         const result = await response.json().catch(() => ({}))
@@ -1435,9 +1485,6 @@ async function renderReviewPageV2() {
           <label>资源包 zip
             <input name="package" type="file" accept=".zip,application/zip" required />
           </label>
-          <label>提交人
-            <input name="submittedBy" type="text" placeholder="publisher" />
-          </label>
           <button class="button" type="submit">提交审核</button>
         </form>
         <div class="detail-section">
@@ -1460,7 +1507,7 @@ async function renderReviewPageV2() {
       document.getElementById('upload-form').addEventListener('submit', async event => {
         event.preventDefault()
         const form = new FormData(event.currentTarget)
-        const response = await fetch('/api/submissions', { method: 'POST', body: form })
+        const response = await fetch('/api/submissions', { method: 'POST', headers: window.mikoWriteHeaders(), body: form })
         const result = await response.json().catch(() => ({}))
         if (!response.ok) {
           showToast(result.error || '提交失败')
@@ -1472,10 +1519,11 @@ async function renderReviewPageV2() {
         button.addEventListener('click', async () => {
           const action = button.getAttribute('data-action')
           const id = button.getAttribute('data-id')
-          const notes = action === 'reject' ? prompt('拒绝原因') || '' : ''
+          const notes = prompt(action === 'reject' ? '拒绝原因' : '审核意见') || ''
+          if (!notes) return
           const response = await fetch('/api/reviews/' + encodeURIComponent(id) + '/' + action, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: window.mikoWriteHeaders({ 'content-type': 'application/json' }),
             body: JSON.stringify({ reviewer: 'local-reviewer', notes })
           })
           const result = await response.json().catch(() => ({}))
@@ -1488,6 +1536,70 @@ async function renderReviewPageV2() {
       })
     </script>`
   return text(renderShell('资源审核后台', body, '', { audience: 'admin' }), 200, 'text/html; charset=utf-8')
+}
+
+function renderPublisherApplicationPage(application: Record<string, unknown> | null, isPublisher: boolean) {
+  const status = asString(application?.status)
+  const statusText = isPublisher
+    ? 'Your account is already approved as a publisher.'
+    : status === 'pending'
+      ? 'Your publisher application is pending administrator review.'
+      : status === 'rejected'
+        ? `Your previous application was rejected: ${escapeHtml(application?.review_notes || 'No reason provided.')}`
+        : 'Apply for publisher access to submit Skills, MCPs, Tools or Agents.'
+  const disabled = isPublisher || status === 'pending' ? 'disabled' : ''
+  const body = `<h1>申请发布者资格</h1>
+    <p class="lead">普通账号不能直接上传资源。提交发布者申请后，管理员会审核你的发布者信息。</p>
+    <div class="toast show">${statusText}</div>
+    <section class="panel" style="max-width:760px"><form id="publisher-application" class="rules-list">
+      <label>发布者名称<input name="publisherName" required ${disabled} value="${escapeHtml(application?.publisher_name || '')}" /></label>
+      <label>简介<textarea name="description" rows="5" required ${disabled}>${escapeHtml(application?.description || '')}</textarea></label>
+      <label>主页或组织地址<input name="websiteUrl" type="url" ${disabled} value="${escapeHtml(application?.website_url || '')}" placeholder="https://" /></label>
+      <label>资源方向<input name="resourceFocus" required ${disabled} value="${escapeHtml(application?.resource_focus || '')}" placeholder="例如：安全审计、浏览器自动化" /></label>
+      <button class="button" type="submit" ${disabled}>提交申请</button>
+    </form></section>
+    <script>
+      const form=document.getElementById('publisher-application');
+      const csrf=()=>decodeURIComponent((document.cookie.match(/(?:^|; )miko_csrf=([^;]*)/)||[])[1]||'');
+      form.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));const r=await fetch('/api/publisher/application',{method:'POST',headers:{'content-type':'application/json','x-csrf-token':csrf()},body:JSON.stringify(d)});const v=await r.json().catch(()=>({}));if(!r.ok){alert(v.error||'申请提交失败');return}location.reload()})
+    </script>`
+  return text(renderShell('申请发布者资格', body), 200, 'text/html; charset=utf-8')
+}
+
+async function renderAdminPage() {
+  const users = authStore.listUsers()
+  const published = (await readPublishedIndex()).resources
+  const applications = authStore.listPublisherApplications()
+  const rawAudit = await readFile(auditLogFile, 'utf-8').catch(() => '')
+  const auditEvents = rawAudit.trim().split('\n').filter(Boolean).slice(-50).reverse().map(line => JSON.parse(line) as Record<string, unknown>)
+  const userCards = users.map(user => `<article class="card"><strong>${escapeHtml(user.email)}</strong><div class="desc">${escapeHtml(user.display_name)}<br>${escapeHtml(user.roles.join(', '))}<br>${escapeHtml(user.status)}</div><label>角色<select data-role-select="${escapeHtml(user.id)}"><option value="publisher" ${user.roles.includes('publisher') ? 'selected' : ''}>发布者</option><option value="reviewer" ${user.roles.includes('reviewer') ? 'selected' : ''}>审核员</option><option value="admin" ${user.roles.includes('admin') ? 'selected' : ''}>管理员</option></select></label><div class="actions"><button class="ghost" data-role-user-id="${escapeHtml(user.id)}">更新角色</button>${user.status === 'active' ? `<button class="ghost danger" data-status="disable" data-user-id="${escapeHtml(user.id)}">禁用账号</button>` : `<button class="ghost" data-status="enable" data-user-id="${escapeHtml(user.id)}">启用账号</button>`}</div></article>`).join('')
+  const resourceCards = published.map(record => `<article class="card"><strong>${escapeHtml(record.resource.name)}</strong><div class="desc"><code>${escapeHtml(record.resource.id)}</code><br>v${escapeHtml(record.resource.version)} · ${escapeHtml(record.status || 'published')}</div><button class="ghost ${record.status === 'taken_down' ? '' : 'danger'}" data-resource-id="${escapeHtml(record.resource.id)}" data-resource-version="${escapeHtml(record.resource.version)}" data-resource-action="${record.status === 'taken_down' ? 'restore' : 'take-down'}">${record.status === 'taken_down' ? '恢复发布' : '下架资源'}</button></article>`).join('')
+  const applicationCards = applications.map(application => `<article class="card"><strong>${escapeHtml(application.publisher_name)}</strong><div class="desc">${escapeHtml(application.email)}<br>${escapeHtml(application.resource_focus)}<br>${escapeHtml(application.status)}</div><div class="actions">${application.status === 'pending' ? `<button class="button" data-application-action="approve" data-application-id="${escapeHtml(application.id)}">批准发布者</button><button class="ghost danger" data-application-action="reject" data-application-id="${escapeHtml(application.id)}">拒绝</button>` : `<span class="badge">${escapeHtml(application.review_notes || '')}</span>`}</div></article>`).join('')
+  const auditRows = auditEvents.map(event => `<tr><td>${escapeHtml(event.at)}</td><td>${escapeHtml(event.event)}</td><td><code>${escapeHtml(event.actorId || '')}</code></td><td><code>${escapeHtml(event.targetUserId || event.resourceId || event.submissionId || '')}</code></td></tr>`).join('')
+  const body = `<h1>市场管理</h1>
+    <p class="lead">管理员负责账号、角色、审核和资源生命周期。所有敏感操作都由服务端鉴权并记录。</p>
+    <div class="actions"><a class="button" href="/reviews">打开审核队列</a><button class="ghost" id="logout">退出登录</button></div>
+    <div class="toast" id="toast"></div>
+    <section class="panel"><h2 style="margin-top:0">新增后台账号</h2><form id="create-user" class="form-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+      <label>邮箱<input name="email" type="email" required /></label><label>显示名称<input name="displayName" required /></label>
+      <label>初始密码<input name="password" type="password" minlength="12" required /></label><label>角色<select name="role"><option value="publisher">发布者</option><option value="reviewer">审核员</option><option value="admin">管理员</option></select></label>
+      <button class="button" type="submit">创建账号</button></form></section>
+    <section class="panel"><h2 style="margin-top:0">账号</h2><div id="users" class="grid">${userCards}</div></section>
+    <section class="panel"><h2 style="margin-top:0">发布者申请</h2><div class="grid">${applicationCards || '<div class="empty">当前没有发布者申请。</div>'}</div></section>
+    <section class="panel"><h2 style="margin-top:0">已发布资源</h2><div class="grid">${resourceCards || '<div class="empty">当前没有已发布资源。</div>'}</div></section>
+    <section class="panel"><h2 style="margin-top:0">最近审计事件</h2><div style="overflow:auto"><table class="review-table"><thead><tr><th>时间</th><th>事件</th><th>操作者</th><th>目标</th></tr></thead><tbody>${auditRows}</tbody></table></div></section>
+    <script>
+      const toast=document.getElementById('toast'); const csrf=()=>decodeURIComponent((document.cookie.match(/(?:^|; )miko_csrf=([^;]*)/)||[])[1]||'');
+      const api=(url,init={})=>fetch(url,{...init,headers:{...(init.headers||{}),'x-csrf-token':csrf()}});
+      const show=m=>{toast.textContent=m;toast.classList.add('show')};
+      document.querySelectorAll('[data-status]').forEach(b=>b.onclick=async()=>{const r=await api('/api/admin/users/'+encodeURIComponent(b.dataset.userId)+'/'+b.dataset.status,{method:'POST'});if(!r.ok){show((await r.json()).error||'操作失败');return}location.reload()});
+      document.querySelectorAll('[data-role-user-id]').forEach(b=>b.onclick=async()=>{const id=b.dataset.roleUserId;const role=document.querySelector('[data-role-select="'+id+'"]').value;const r=await api('/api/admin/users/'+encodeURIComponent(id)+'/roles',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roles:[role]})});if(!r.ok){show((await r.json()).error||'操作失败');return}location.reload()});
+      document.querySelectorAll('[data-resource-action]').forEach(b=>b.onclick=async()=>{const notes=prompt(b.dataset.resourceAction==='take-down'?'下架原因':'恢复原因')||'';if(!notes)return;const r=await api('/api/admin/resources/'+encodeURIComponent(b.dataset.resourceId)+'/'+encodeURIComponent(b.dataset.resourceVersion)+'/'+b.dataset.resourceAction,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({notes})});if(!r.ok){show((await r.json()).error||'操作失败');return}location.reload()});
+      document.querySelectorAll('[data-application-action]').forEach(b=>b.onclick=async()=>{const notes=prompt(b.dataset.applicationAction==='reject'?'拒绝原因':'批准说明')||'';if(!notes)return;const r=await api('/api/admin/publisher-applications/'+encodeURIComponent(b.dataset.applicationId)+'/'+b.dataset.applicationAction,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({notes})});if(!r.ok){show((await r.json()).error||'操作失败');return}location.reload()});
+      document.getElementById('create-user').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.currentTarget));const r=await api('/api/admin/users',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:d.email,displayName:d.displayName,password:d.password,roles:[d.role]})});if(!r.ok){show((await r.json()).error||'创建失败');return}location.reload()};
+      document.getElementById('logout').onclick=async()=>{await api('/api/auth/logout',{method:'POST'});location.href='/'};
+    </script>`
+  return text(renderShell('市场管理', body, '', { audience: 'admin' }), 200, 'text/html; charset=utf-8')
 }
 
 async function renderMikoHomePageV3(origin: string) {
@@ -2150,16 +2262,69 @@ export function startLocalMarketplaceServer() {
     async fetch(req) {
       try {
         if (req.method === 'OPTIONS') {
+          if (!allowedOrigin || req.headers.get('origin') !== allowedOrigin) return new Response(null, { status: 403 })
           return new Response(null, {
             headers: {
-              'access-control-allow-origin': '*',
+              'access-control-allow-origin': allowedOrigin,
+              'access-control-allow-credentials': 'true',
               'access-control-allow-methods': 'GET,POST,OPTIONS',
-              'access-control-allow-headers': 'content-type,authorization,x-miko-role,x-miko-actor',
+              'access-control-allow-headers': 'content-type,x-csrf-token',
+              vary: 'Origin',
             },
           })
         }
 
         const url = new URL(req.url)
+        if (req.method === 'GET' && url.pathname === '/register') {
+          return renderRegistrationPage()
+        }
+        if (req.method === 'GET' && url.pathname === '/login') {
+          return text(renderShell('登录资源市场', `<h1>登录</h1><p class="lead">登录后可以申请发布者资格、提交资源或进入审核后台。</p><section class="panel" style="max-width:440px"><div class="toast" id="toast"></div><form id="login" class="rules-list"><label>邮箱<input name="email" type="email" autocomplete="username" required /></label><label>密码<input name="password" type="password" autocomplete="current-password" required /></label><button class="button" type="submit">登录</button><a class="ghost" href="/register">注册普通账号</a></form></section><script>const f=document.getElementById('login');const t=document.getElementById('toast');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});if(!r.ok){t.textContent='邮箱或密码错误，或登录尝试过于频繁';t.classList.add('show');return}const v=await r.json();location.href=v.user.roles.includes('admin')?'/admin':v.user.roles.includes('reviewer')?'/reviews':v.user.roles.includes('publisher')?'/publish':'/publisher/apply'})</script>`), 200, 'text/html; charset=utf-8')
+        }
+        if (req.method === 'POST' && url.pathname === '/api/auth/register') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const user = await authStore.registerUser({
+            email: asString(body.email),
+            displayName: asString(body.displayName),
+            password: asString(body.password),
+          })
+          await appendAudit('auth.user.registered', { actorId: user?.id })
+          return json({ user: { id: user?.id, email: user?.email, roles: user?.roles } }, 201)
+        }
+        if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const email = asString(body.email)
+          const password = asString(body.password)
+          if (!email || !password) return badRequest('Email and password are required')
+          const login = await authStore.login(email, password)
+          if (!login) return json({ error: 'Invalid credentials or too many attempts' }, 401)
+          return jsonWithHeaders({ user: { id: login.actor.actorId, email: login.actor.email, roles: login.actor.roles }, csrfToken: login.csrfToken }, login.headers)
+        }
+        if (req.method === 'GET' && url.pathname === '/api/auth/me') {
+          const auth = authStore.authenticate(req)
+          if (!auth) return json({ error: 'Authentication required' }, 401)
+          return json({ user: { id: auth.actor.actorId, email: auth.actor.email, roles: auth.actor.roles } })
+        }
+        if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+          const auth = authStore.authenticate(req)
+          if (!auth) return json({ error: 'Authentication required' }, 401)
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          return jsonWithHeaders({ ok: true }, authStore.logout(req))
+        }
+        if (req.method === 'GET' && url.pathname === '/admin') {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          return await renderAdminPage()
+        }
+        if (req.method === 'GET' && url.pathname === '/publisher/apply') {
+          const auth = authStore.authenticate(req)
+          if (!auth) return new Response(null, { status: 302, headers: { location: '/login' } })
+          return renderPublisherApplicationPage(
+            authStore.getPublisherApplication(auth.actor.actorId),
+            auth.actor.roles.includes('publisher'),
+          )
+        }
         if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
           return await renderUnifiedHomeFromCatalog(url.origin)
         }
@@ -2193,20 +2358,122 @@ export function startLocalMarketplaceServer() {
           if ('response' in auth) return auth.response
           return json({ submissions: await listSubmissions() })
         }
+        if (req.method === 'GET' && url.pathname === '/api/publisher/application') {
+          const auth = authStore.authenticate(req)
+          if (!auth) return json({ error: 'Authentication required' }, 401)
+          return json({ application: authStore.getPublisherApplication(auth.actor.actorId) })
+        }
+        if (req.method === 'POST' && url.pathname === '/api/publisher/application') {
+          const auth = authStore.authenticate(req)
+          if (!auth) return json({ error: 'Authentication required' }, 401)
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const application = authStore.submitPublisherApplication({
+            userId: auth.actor.actorId,
+            publisherName: asString(body.publisherName),
+            description: asString(body.description),
+            websiteUrl: asString(body.websiteUrl),
+            resourceFocus: asString(body.resourceFocus),
+          })
+          await appendAudit('publisher.application.submitted', { actorId: auth.actor.actorId, applicationId: (application as { id?: string } | null)?.id })
+          return json({ application }, 201)
+        }
+        if (req.method === 'GET' && url.pathname === '/api/admin/users') {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          return json({ users: authStore.listUsers() })
+        }
+        if (req.method === 'POST' && url.pathname === '/api/admin/users') {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const user = await authStore.createUser({
+            email: asString(body.email),
+            displayName: asString(body.displayName),
+            password: asString(body.password),
+            roles: parseMarketplaceRoles(body.roles),
+          }, auth.actor.actorId)
+          await appendAudit('admin.user.created', { actorId: auth.actor.actorId, targetUserId: user?.id, roles: user?.roles })
+          return json({ user }, 201)
+        }
+        const adminUserStatusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/)
+        if (req.method === 'POST' && adminUserStatusMatch) {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          const [, userId, action] = adminUserStatusMatch
+          const user = authStore.updateUserStatus(decodeURIComponent(userId), action === 'enable' ? 'active' : 'disabled', auth.actor.actorId)
+          if (!user) return json({ error: 'User not found' }, 404)
+          await appendAudit(`admin.user.${action}d`, { actorId: auth.actor.actorId, targetUserId: userId })
+          return json({ user })
+        }
+        const adminUserRolesMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/roles$/)
+        if (req.method === 'POST' && adminUserRolesMatch) {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const roles = parseMarketplaceRoles(body.roles)
+          const userId = decodeURIComponent(adminUserRolesMatch[1])
+          const user = authStore.updateUserRoles(userId, roles, auth.actor.actorId)
+          if (!user) return json({ error: 'User not found' }, 404)
+          await appendAudit('admin.user.roles_changed', { actorId: auth.actor.actorId, targetUserId: userId, roles })
+          return json({ user })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/admin/audit') {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          const raw = await readFile(auditLogFile, 'utf-8').catch(() => '')
+          const events = raw.trim().split('\n').filter(Boolean).slice(-500).reverse().map(line => JSON.parse(line))
+          return json({ events })
+        }
+        if (req.method === 'GET' && url.pathname === '/api/admin/publisher-applications') {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          return json({ applications: authStore.listPublisherApplications() })
+        }
+        const publisherApplicationReviewMatch = url.pathname.match(/^\/api\/admin\/publisher-applications\/([^/]+)\/(approve|reject)$/)
+        if (req.method === 'POST' && publisherApplicationReviewMatch) {
+          const auth = requireRole(req, ['admin'])
+          if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
+          const body = await req.json().catch(() => ({})) as Record<string, unknown>
+          const [, applicationId, action] = publisherApplicationReviewMatch
+          const application = authStore.reviewPublisherApplication(
+            decodeURIComponent(applicationId),
+            action === 'approve' ? 'approved' : 'rejected',
+            auth.actor.actorId,
+            asString(body.notes),
+          )
+          if (!application) return json({ error: 'Publisher application not found' }, 404)
+          await appendAudit(`publisher.application.${action}d`, { actorId: auth.actor.actorId, applicationId })
+          return json({ application })
+        }
         if (req.method === 'GET' && url.pathname.startsWith('/packages/')) {
           return await servePackage(url.pathname)
         }
         if (req.method === 'POST' && url.pathname === '/api/submissions') {
           const auth = requireRole(req, ['publisher', 'admin'])
           if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
           return await handleCreateSubmission(req, auth.actor)
         }
         const reviewMatch = url.pathname.match(/^\/api\/reviews\/([^/]+)\/(approve|reject)$/)
         if (req.method === 'POST' && reviewMatch) {
           const auth = requireRole(req, ['reviewer', 'admin'])
           if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
           const [, id, action] = reviewMatch
           const body = await readReviewBody(req)
+          if (!body.notes) return badRequest('Review notes are required')
           const reviewer = auth.actor.actorId
           const record = action === 'approve'
             ? await approveSubmission(decodeURIComponent(id), reviewer, body.notes, auth.actor)
@@ -2218,8 +2485,11 @@ export function startLocalMarketplaceServer() {
         if (req.method === 'POST' && adminResourceMatch) {
           const auth = requireRole(req, ['admin'])
           if ('response' in auth) return auth.response
+          const csrfError = requireCsrf(req, auth.actor)
+          if (csrfError) return csrfError
           const [, rawId, rawVersion, action] = adminResourceMatch
           const body = await readReviewBody(req)
+          if (!body.notes) return badRequest('Takedown and restore notes are required')
           const record = await updatePublishedResourceStatus(
             sanitizeId(decodeURIComponent(rawId), 'resource id'),
             sanitizeId(decodeURIComponent(rawVersion), 'version'),
@@ -2246,6 +2516,10 @@ export function startLocalMarketplaceServer() {
   console.log(`[marketplace] storage = ${storageRoot}`)
   console.log(`[marketplace] bundled = ${bundledMarketplaceRoot}`)
   return server
+}
+
+export function closeLocalMarketplaceAuthStoreForTests() {
+  authStore.close()
 }
 
 if (import.meta.main) {
