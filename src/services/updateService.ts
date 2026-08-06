@@ -67,7 +67,7 @@ const EMPTY_STATUS: ResourceUpdateStatus = {
   state: 'idle',
 }
 
-const DEFAULT_UPDATE_MANIFEST_URL = 'http://127.0.0.1:8788/updates/update.json'
+const DEFAULT_UPDATE_MANIFEST_URL = 'http://8.134.211.101/updates/update.json'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -279,7 +279,13 @@ function hashSha256(data: Uint8Array): string {
 }
 
 async function fetchJson(url: URL): Promise<unknown> {
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  let response: Response
+  try {
+    response = await fetch(url, { headers: { accept: 'application/json' } })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new UpdateServiceError('BAD_REQUEST', `Unable to reach resource update endpoint ${url}: ${detail}`)
+  }
   if (!response.ok) {
     throw new UpdateServiceError('BAD_REQUEST', `Request failed for ${url}: ${response.status} ${response.statusText}`)
   }
@@ -289,7 +295,13 @@ async function fetchJson(url: URL): Promise<unknown> {
 }
 
 async function fetchFile(url: URL): Promise<Uint8Array> {
-  const response = await fetch(url)
+  let response: Response
+  try {
+    response = await fetch(url)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new UpdateServiceError('BAD_REQUEST', `Unable to download resource package ${url}: ${detail}`)
+  }
   if (!response.ok) {
     throw new UpdateServiceError('BAD_REQUEST', `File request failed for ${url}: ${response.status} ${response.statusText}`)
   }

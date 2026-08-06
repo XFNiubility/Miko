@@ -21,6 +21,7 @@ const tempDirs: string[] = []
 const originalBundledRoot = process.env.KIMO_BUNDLED_DATA_ROOT
 const originalUpdateManifestUrl = process.env.KIMO_UPDATE_MANIFEST_URL
 const originalResourceSignaturePublicKey = process.env.KIMO_RESOURCE_SIGNATURE_PUBLIC_KEY
+const originalFetch = globalThis.fetch
 
 async function makeRoots(): Promise<{ root: string; dataDir: string; bundledDir: string }> {
   const root = await mkdtemp(join(tmpdir(), 'miko-resource-update-'))
@@ -55,6 +56,7 @@ function signResource(data: Uint8Array): { publicKey: string; signature: string 
 }
 
 afterEach(async () => {
+  globalThis.fetch = originalFetch
   resetDataDirForTests()
   if (originalBundledRoot === undefined) {
     delete process.env.KIMO_BUNDLED_DATA_ROOT
@@ -75,6 +77,37 @@ afterEach(async () => {
 })
 
 describe('updateService resource updates', () => {
+  it('refreshes from the official cloud manifest by default', async () => {
+    await makeRoots()
+    delete process.env.KIMO_UPDATE_MANIFEST_URL
+    let requestedUrl = ''
+    globalThis.fetch = (async (input) => {
+      requestedUrl = String(input)
+      return Response.json({
+        schemaVersion: 1,
+        resources: [],
+      })
+    }) as typeof fetch
+
+    await expect(refreshUpdateManifest()).resolves.toMatchObject({
+      source: 'cache',
+    })
+    expect(requestedUrl).toBe('http://8.134.211.101/updates/update.json')
+  })
+
+  it('reports an actionable service error when the update endpoint is unreachable', async () => {
+    await makeRoots()
+    globalThis.fetch = (async () => {
+      throw new TypeError('connection refused')
+    }) as typeof fetch
+
+    await expect(refreshUpdateManifest('http://updates.example.test/update.json')).rejects.toMatchObject({
+      name: 'UpdateServiceError',
+      code: 'BAD_REQUEST',
+      message: 'Unable to reach resource update endpoint http://updates.example.test/update.json: connection refused',
+    })
+  })
+
   it('refreshes a remote update manifest into the manifest cache and status file', async () => {
     await makeRoots()
     const server = Bun.serve({
