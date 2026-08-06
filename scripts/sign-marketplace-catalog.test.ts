@@ -68,6 +68,12 @@ describe('sign-marketplace-catalog', () => {
           type: 'skill',
           name: 'signed-sample',
           version: '1.0.0',
+          publisher: 'Example Publisher',
+          sourceRepository: 'https://github.com/example/signed-sample',
+          sourceCommit: '0123456789abcdef',
+          license: 'MIT',
+          riskLevel: 'high',
+          requiresExplicitAuthorization: true,
           packagePath: 'local-packages/skill.signed-sample/1.0.0',
         }],
       }),
@@ -87,6 +93,14 @@ describe('sign-marketplace-catalog', () => {
     expect(catalog.resources[0].packageUrl).toBe(
       'https://market.example.com/packages/skill.signed-sample/1.0.0/package.zip',
     )
+    expect(catalog.resources[0]).toMatchObject({
+      publisher: 'Example Publisher',
+      sourceRepository: 'https://github.com/example/signed-sample',
+      sourceCommit: '0123456789abcdef',
+      license: 'MIT',
+      riskLevel: 'high',
+      requiresExplicitAuthorization: true,
+    })
 
     const packageZip = await readFile(join(output, 'packages', 'skill.signed-sample', '1.0.0', 'package.zip'))
     expect(verifyResourceSignature(packageZip, catalog.resources[0].signature, 'signed package')).toBe('verified')

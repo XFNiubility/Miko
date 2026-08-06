@@ -1209,7 +1209,7 @@ export function renderUnifiedHomePage(resources: PublicCatalogResource[], counts
                 </div>
               </div>
               <div class="mk-terminal">
-                <div>$ miko marketplace install mcp.local-echo</div>
+                <div>$ miko marketplace install skill.secskills</div>
                 <div>package verified: sha256 matched</div>
                 <div>data/mcp.json updated without overwriting user servers</div>
               </div>

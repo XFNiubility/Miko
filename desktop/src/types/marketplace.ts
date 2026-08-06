@@ -1,4 +1,5 @@
 export type MarketplaceResourceType = 'skill' | 'mcp' | 'tool' | 'agent'
+export type MarketplaceRiskLevel = 'low' | 'medium' | 'high' | 'critical'
 
 export type MarketplaceResource = {
   id: string
@@ -12,6 +13,12 @@ export type MarketplaceResource = {
   sha256?: string
   signature?: string
   minMikoVersion?: string
+  publisher?: string
+  sourceRepository?: string
+  sourceCommit?: string
+  license?: string
+  riskLevel?: MarketplaceRiskLevel
+  requiresExplicitAuthorization?: boolean
   permissions?: string[]
 }
 

@@ -12,8 +12,12 @@ export type MarketplaceTrustSource = {
   publicKeySource: 'official' | 'configured' | 'none'
 }
 
-// Filled when the official marketplace key is finalized. Keep this list public-key only.
-const BUILTIN_OFFICIAL_RESOURCE_PUBLIC_KEYS: string[] = []
+const BUILTIN_OFFICIAL_MARKETPLACE_CATALOG_URLS = ['http://8.134.211.101/catalog.json']
+
+// Public verification keys only. The signing private key remains on the marketplace server.
+const BUILTIN_OFFICIAL_RESOURCE_PUBLIC_KEYS = [
+  'MCowBQYDK2VwAyEAO0UZPIYPEVuYWtjhR0X4+kCaxyf8HqlqBitAbnlS+Wg=',
+]
 
 function csvEnv(name: string): string[] {
   return (process.env[name] || '')
@@ -40,6 +44,7 @@ function getOfficialPublicKeys(): string[] {
 
 function configuredOfficialCatalogUrls(): string[] {
   return [
+    ...BUILTIN_OFFICIAL_MARKETPLACE_CATALOG_URLS,
     process.env.KIMO_MARKETPLACE_OFFICIAL_CATALOG_URL?.trim(),
     process.env.MIKO_MARKETPLACE_OFFICIAL_CATALOG_URL?.trim(),
     ...csvEnv('KIMO_MARKETPLACE_OFFICIAL_CATALOG_URLS'),

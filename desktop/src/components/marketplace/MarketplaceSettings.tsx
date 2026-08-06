@@ -292,7 +292,7 @@ async function runCatalogRefresh(
   }
 }
 
-function MarketplaceResourceCard({
+export function MarketplaceResourceCard({
   resource,
   installed,
   isApplying,
@@ -335,6 +335,12 @@ function MarketplaceResourceCard({
             )}
             <MetaPill>{t(`settings.marketplace.type.${resource.type}`)}</MetaPill>
             {resource.category && <MetaPill>{resource.category}</MetaPill>}
+            {resource.riskLevel && (
+              <StatusPill
+                tone={resource.riskLevel === 'high' || resource.riskLevel === 'critical' ? 'danger' : 'warning'}
+                label={t(`settings.marketplace.risk.${resource.riskLevel}`)}
+              />
+            )}
           </div>
           <p className="mt-2 line-clamp-3 text-xs leading-5 text-[var(--color-text-secondary)]">
             {resource.description || t('settings.marketplace.noDescription')}
@@ -375,6 +381,23 @@ function MarketplaceResourceCard({
               {permission}
             </span>
           ))}
+        </div>
+      )}
+
+      {(resource.publisher || resource.license || resource.sourceRepository) && (
+        <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--color-text-tertiary)]">
+          {resource.publisher && <span>{t('settings.marketplace.publisher', { value: resource.publisher })}</span>}
+          {resource.license && <span>{t('settings.marketplace.license', { value: resource.license })}</span>}
+          {resource.sourceRepository && (
+            <a
+              className="max-w-full truncate text-[var(--color-brand)] hover:underline"
+              href={resource.sourceRepository}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t('settings.marketplace.sourceRepository')}
+            </a>
+          )}
         </div>
       )}
 
@@ -475,12 +498,14 @@ function StatusPill({
   tone,
   label,
 }: {
-  tone: 'success' | 'warning' | 'muted'
+  tone: 'success' | 'warning' | 'danger' | 'muted'
   label: string
 }) {
   const classes =
     tone === 'success'
       ? 'bg-[var(--color-success-container)] text-[var(--color-success)]'
+      : tone === 'danger'
+        ? 'bg-[var(--color-error-container)] text-[var(--color-error)]'
       : tone === 'warning'
         ? 'bg-[var(--color-warning-container)] text-[var(--color-warning)]'
         : 'bg-[var(--color-surface-container-low)] text-[var(--color-text-tertiary)]'
@@ -540,9 +565,28 @@ function MarketplaceInstallConfirmModal({
         <div className="grid gap-3 md:grid-cols-2">
           <ConfirmField label={t('settings.marketplace.confirm.type')} value={t(`settings.marketplace.type.${resource.type}`)} />
           <ConfirmField label={t('settings.marketplace.confirm.version')} value={`v${resource.version}`} />
+          {resource.publisher && <ConfirmField label={t('settings.marketplace.confirm.publisher')} value={resource.publisher} />}
+          {resource.license && <ConfirmField label={t('settings.marketplace.confirm.license')} value={resource.license} />}
+          {resource.riskLevel && <ConfirmField label={t('settings.marketplace.confirm.risk')} value={t(`settings.marketplace.risk.${resource.riskLevel}`)} />}
           <ConfirmField label={t('settings.marketplace.confirm.sha256')} value={t(`settings.marketplace.confirm.verification.${preview.verification.sha256}`)} />
           <ConfirmField label={t('settings.marketplace.confirm.signature')} value={t(`settings.marketplace.confirm.verification.${preview.verification.signature}`)} />
         </div>
+
+        {resource.requiresExplicitAuthorization && (
+          <div className="rounded-xl border border-[var(--color-error)] bg-[var(--color-error-container)] px-3 py-3 text-sm leading-6 text-[var(--color-on-error-container)]">
+            {t('settings.marketplace.confirm.authorizationRequired')}
+          </div>
+        )}
+
+        {resource.sourceRepository && (
+          <div className="min-w-0 text-xs text-[var(--color-text-tertiary)]">
+            <span>{t('settings.marketplace.confirm.sourceRepository')}: </span>
+            <a className="break-all text-[var(--color-brand)] hover:underline" href={resource.sourceRepository} target="_blank" rel="noreferrer">
+              {resource.sourceRepository}
+            </a>
+            {resource.sourceCommit && <span className="ml-2 font-mono">({resource.sourceCommit})</span>}
+          </div>
+        )}
 
         {preview.permissions.length > 0 && (
           <div>

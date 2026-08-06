@@ -40,6 +40,11 @@ type CatalogResource = {
   minMikoVersion?: string
   permissions?: string[]
   publisher?: string
+  sourceRepository?: string
+  sourceCommit?: string
+  license?: string
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical'
+  requiresExplicitAuthorization?: boolean
   publishedAt?: string
   reviewStatus?: 'approved'
 }
@@ -62,6 +67,11 @@ type ResourceManifest = {
   minMikoVersion?: string
   permissions?: string[]
   publisher?: string
+  sourceRepository?: string
+  sourceCommit?: string
+  license?: string
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical'
+  requiresExplicitAuthorization?: boolean
 }
 
 type SubmissionRecord = {
@@ -278,6 +288,13 @@ function normalizeManifest(value: unknown): ResourceManifest {
     minMikoVersion: asString(value.minMikoVersion),
     permissions: asStringArray(value.permissions),
     publisher: asString(value.publisher),
+    sourceRepository: asString(value.sourceRepository),
+    sourceCommit: asString(value.sourceCommit),
+    license: asString(value.license),
+    riskLevel: value.riskLevel === 'low' || value.riskLevel === 'medium' || value.riskLevel === 'high' || value.riskLevel === 'critical'
+      ? value.riskLevel
+      : undefined,
+    requiresExplicitAuthorization: value.requiresExplicitAuthorization === true,
   }
 }
 
@@ -296,6 +313,11 @@ function manifestToCatalogResource(record: PublishedRecord, origin: string): Cat
     minMikoVersion: resource.minMikoVersion,
     permissions: resource.permissions,
     publisher: resource.publisher,
+    sourceRepository: resource.sourceRepository,
+    sourceCommit: resource.sourceCommit,
+    license: resource.license,
+    riskLevel: resource.riskLevel,
+    requiresExplicitAuthorization: resource.requiresExplicitAuthorization,
     publishedAt: record.publishedAt,
     reviewStatus: 'approved',
   }
@@ -411,6 +433,12 @@ async function createSeedPackage(resource: CatalogResource, sourceDir: string): 
         category: resource.category,
         description: resource.description,
         permissions: resource.permissions,
+        publisher: resource.publisher,
+        sourceRepository: resource.sourceRepository,
+        sourceCommit: resource.sourceCommit,
+        license: resource.license,
+        riskLevel: resource.riskLevel,
+        requiresExplicitAuthorization: resource.requiresExplicitAuthorization,
       })
     }
     return await createZipFromDirectory(tempDir)
@@ -2017,7 +2045,7 @@ async function renderMikoHomePageV4(origin: string) {
                 </div>
               </div>
               <div class="v4-terminal">
-                <div>$ miko marketplace install mcp.local-echo</div>
+                <div>$ miko marketplace install skill.secskills</div>
                 <div>package verified: sha256 matched</div>
                 <div>data/mcp.json updated without overwriting user servers</div>
               </div>

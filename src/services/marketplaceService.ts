@@ -28,6 +28,7 @@ import {
 } from './marketplaceTrust.js'
 
 export type MarketplaceResourceType = 'skill' | 'mcp' | 'tool' | 'agent'
+export type MarketplaceRiskLevel = 'low' | 'medium' | 'high' | 'critical'
 
 export type MarketplaceResource = {
   id: string
@@ -41,6 +42,12 @@ export type MarketplaceResource = {
   sha256?: string
   signature?: string
   minMikoVersion?: string
+  publisher?: string
+  sourceRepository?: string
+  sourceCommit?: string
+  license?: string
+  riskLevel?: MarketplaceRiskLevel
+  requiresExplicitAuthorization?: boolean
   permissions?: string[]
 }
 
@@ -131,7 +138,7 @@ const EMPTY_INSTALLED: MarketplaceInstalledState = {
   installed: {},
 }
 
-const DEFAULT_LOCAL_MARKETPLACE_CATALOG_URL = 'http://127.0.0.1:8788/catalog.json'
+const DEFAULT_MARKETPLACE_CATALOG_URL = 'http://8.134.211.101/catalog.json'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -155,6 +162,10 @@ function asStringRecord(value: unknown): Record<string, string> | undefined {
 
 function isResourceType(value: unknown): value is MarketplaceResourceType {
   return value === 'skill' || value === 'mcp' || value === 'tool' || value === 'agent'
+}
+
+function isRiskLevel(value: unknown): value is MarketplaceRiskLevel {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'critical'
 }
 
 function sanitizeResourceId(id: string): string {
@@ -184,6 +195,12 @@ function normalizeCatalogResource(value: unknown): MarketplaceResource | null {
     sha256: asString(value.sha256),
     signature: asString(value.signature),
     minMikoVersion: asString(value.minMikoVersion),
+    publisher: asString(value.publisher),
+    sourceRepository: asString(value.sourceRepository),
+    sourceCommit: asString(value.sourceCommit),
+    license: asString(value.license),
+    riskLevel: isRiskLevel(value.riskLevel) ? value.riskLevel : undefined,
+    requiresExplicitAuthorization: value.requiresExplicitAuthorization === true,
     permissions: asStringArray(value.permissions),
   }
 }
@@ -348,7 +365,7 @@ async function writeJsonFileAtomic(filePath: string, value: unknown): Promise<vo
 }
 
 function resolveRemoteCatalogUrl(catalogUrl?: string): string {
-  const raw = catalogUrl?.trim() || process.env.KIMO_MARKETPLACE_CATALOG_URL?.trim() || DEFAULT_LOCAL_MARKETPLACE_CATALOG_URL
+  const raw = catalogUrl?.trim() || process.env.KIMO_MARKETPLACE_CATALOG_URL?.trim() || DEFAULT_MARKETPLACE_CATALOG_URL
   let parsed: URL
   try {
     parsed = new URL(raw)
@@ -366,7 +383,15 @@ function resolveRemoteCatalogUrl(catalogUrl?: string): string {
 export async function refreshMarketplaceCatalog(catalogUrl?: string): Promise<MarketplaceCatalog> {
   const url = resolveRemoteCatalogUrl(catalogUrl)
   const trustSource = resolveMarketplaceTrustSource(url)
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  let response: Response
+  try {
+    response = await fetch(url, { headers: { accept: 'application/json' } })
+  } catch (error) {
+    throw new MarketplaceServiceError(
+      'BAD_REQUEST',
+      `Unable to reach marketplace catalog ${url}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   if (!response.ok) {
     throw new MarketplaceServiceError(
       'BAD_REQUEST',
@@ -497,7 +522,15 @@ function hashSha256(data: Uint8Array): string {
 }
 
 async function fetchJson(url: URL): Promise<unknown> {
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  let response: Response
+  try {
+    response = await fetch(url, { headers: { accept: 'application/json' } })
+  } catch (error) {
+    throw new MarketplaceServiceError(
+      'BAD_REQUEST',
+      `Unable to reach remote package metadata ${url}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   if (!response.ok) {
     throw new MarketplaceServiceError(
       'BAD_REQUEST',
@@ -510,7 +543,15 @@ async function fetchJson(url: URL): Promise<unknown> {
 }
 
 async function fetchFile(url: URL): Promise<Uint8Array> {
-  const response = await fetch(url)
+  let response: Response
+  try {
+    response = await fetch(url)
+  } catch (error) {
+    throw new MarketplaceServiceError(
+      'BAD_REQUEST',
+      `Unable to download marketplace package ${url}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   if (!response.ok) {
     throw new MarketplaceServiceError(
       'BAD_REQUEST',

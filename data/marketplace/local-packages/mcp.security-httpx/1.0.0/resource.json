@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "mcp.security-httpx",
-  "type": "mcp",
-  "name": "security-httpx",
-  "version": "1.0.0",
-  "category": "security",
-  "description": "Real-world httpx MCP package adapted from f1tz/mcp-for-security-python for marketplace preview and install testing."
-}

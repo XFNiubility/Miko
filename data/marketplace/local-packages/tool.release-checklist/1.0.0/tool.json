@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "name": "release-checklist",
-  "kind": "workflow-template",
-  "entry": "templates/release-checklist.md",
-  "description": "Checklist template for release readiness review.",
-  "permissions": ["read-files"]
-}

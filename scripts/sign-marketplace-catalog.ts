@@ -18,6 +18,11 @@ type SourceResource = {
   minMikoVersion?: string
   permissions?: string[]
   publisher?: string
+  sourceRepository?: string
+  sourceCommit?: string
+  license?: string
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical'
+  requiresExplicitAuthorization?: boolean
 }
 
 type SourceCatalog = {
@@ -147,6 +152,13 @@ function normalizeSourceResource(value: unknown): SourceResource {
     minMikoVersion: typeof record.minMikoVersion === 'string' ? record.minMikoVersion : undefined,
     permissions,
     publisher: typeof record.publisher === 'string' ? record.publisher : undefined,
+    sourceRepository: typeof record.sourceRepository === 'string' ? record.sourceRepository : undefined,
+    sourceCommit: typeof record.sourceCommit === 'string' ? record.sourceCommit : undefined,
+    license: typeof record.license === 'string' ? record.license : undefined,
+    riskLevel: record.riskLevel === 'low' || record.riskLevel === 'medium' || record.riskLevel === 'high' || record.riskLevel === 'critical'
+      ? record.riskLevel
+      : undefined,
+    requiresExplicitAuthorization: record.requiresExplicitAuthorization === true,
   }
 }
 
@@ -213,6 +225,11 @@ async function writePublishedPackage(
     minMikoVersion: resource.minMikoVersion,
     permissions: resource.permissions,
     publisher: resource.publisher,
+    sourceRepository: resource.sourceRepository,
+    sourceCommit: resource.sourceCommit,
+    license: resource.license,
+    riskLevel: resource.riskLevel,
+    requiresExplicitAuthorization: resource.requiresExplicitAuthorization,
     publishedAt,
     reviewStatus: 'approved',
   }

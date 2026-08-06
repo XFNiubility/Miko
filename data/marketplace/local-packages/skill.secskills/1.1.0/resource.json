@@ -1,0 +1,23 @@
+{
+    "schemaVersion":  1,
+    "id":  "skill.secskills",
+    "type":  "skill",
+    "name":  "secskills",
+    "version":  "1.1.0",
+    "category":  "security-testing",
+    "description":  "Third-party penetration testing workflow Skill with information gathering, web security, post-exploitation, host services, tool references, and evasion references.",
+    "entry":  "SKILL.md",
+    "permissions":  [
+                        "read-files",
+                        "network",
+                        "external-tools",
+                        "security-testing"
+                    ],
+    "minMikoVersion":  "1.3.1",
+    "publisher":  "Arenbai",
+    "sourceRepository":  "https://github.com/Arenbai/SecSkills",
+    "sourceCommit":  "c3e010852992149181d4c45eeb33506a9e040829",
+    "license":  "MIT",
+    "riskLevel":  "high",
+    "requiresExplicitAuthorization":  true
+}

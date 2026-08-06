@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "tool.security-cli-adapter",
-  "type": "tool",
-  "name": "security-cli-adapter",
-  "version": "1.0.0",
-  "category": "security",
-  "description": "Tool package sample for security CLI adapters, used to validate marketplace Tool taxonomy while runtime installation remains disabled."
-}

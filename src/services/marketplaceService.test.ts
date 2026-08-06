@@ -165,10 +165,13 @@ describe('marketplaceService', () => {
     })
   })
 
-  it('uses the formal local marketplace catalog URL when no override is provided', async () => {
+  it('uses the official cloud marketplace catalog URL when no override is provided', async () => {
     await makeDataRoot()
     delete process.env.KIMO_MARKETPLACE_CATALOG_URL
+    const signer = makeResourceSigner()
+    process.env.KIMO_MARKETPLACE_OFFICIAL_PUBLIC_KEY = signer.publicKey
     const requests: string[] = []
+    const body = JSON.stringify({ schemaVersion: 1, resources: [] })
 
     globalThis.fetch = (async (input) => {
       const url = typeof input === 'string'
@@ -177,17 +180,36 @@ describe('marketplaceService', () => {
           ? input.toString()
           : input.url
       requests.push(url)
-      return new Response(JSON.stringify({ schemaVersion: 1, resources: [] }), {
-        headers: { 'content-type': 'application/json' },
+      return new Response(body, {
+        headers: {
+          'content-type': 'application/json',
+          'x-miko-catalog-signature': signer.signData(new TextEncoder().encode(body)),
+        },
       })
     }) as typeof fetch
 
     await expect(refreshMarketplaceCatalog()).resolves.toMatchObject({
       schemaVersion: 1,
       source: 'cache',
+      verification: { signature: 'verified' },
+      trust: {
+        sourceType: 'official',
+        publicKeySource: 'official',
+      },
       resources: [],
     })
-    expect(requests).toEqual(['http://127.0.0.1:8788/catalog.json'])
+    expect(requests).toEqual(['http://8.134.211.101/catalog.json'])
+  })
+
+  it('returns an actionable error when the marketplace catalog cannot be reached', async () => {
+    await makeDataRoot()
+    globalThis.fetch = (async () => {
+      throw new TypeError('connection refused')
+    }) as typeof fetch
+
+    await expect(refreshMarketplaceCatalog()).rejects.toThrow(
+      'Unable to reach marketplace catalog http://8.134.211.101/catalog.json: connection refused',
+    )
   })
 
   it('requires a catalog signature for non-local marketplace sources by default', async () => {
@@ -266,6 +288,12 @@ describe('marketplaceService', () => {
         type: 'skill',
         name: 'official-signed',
         version: '1.0.0',
+        publisher: 'Example Publisher',
+        sourceRepository: 'https://market.example.com/upstream',
+        sourceCommit: '0123456789abcdef',
+        license: 'MIT',
+        riskLevel: 'high',
+        requiresExplicitAuthorization: true,
         packageUrl: 'https://market.example.com/packages/skill.official-signed/1.0.0/package.zip',
         sha256: sha256(zipData),
         signature: signer.signData(zipData),
@@ -302,7 +330,15 @@ describe('marketplaceService', () => {
         requiresSignature: true,
         publicKeySource: 'official',
       },
-      resources: [{ id: 'skill.official-signed' }],
+      resources: [{
+        id: 'skill.official-signed',
+        publisher: 'Example Publisher',
+        sourceRepository: 'https://market.example.com/upstream',
+        sourceCommit: '0123456789abcdef',
+        license: 'MIT',
+        riskLevel: 'high',
+        requiresExplicitAuthorization: true,
+      }],
     })
 
     await installMarketplaceResource('skill.official-signed')
@@ -1283,7 +1319,7 @@ describe('marketplaceService', () => {
     await expect(readFile(join(dataDir, 'marketplace', 'installed.json'), 'utf-8')).rejects.toThrow()
   })
 
-  it('validates real-world security marketplace samples without executing their tools', async () => {
+  it('validates the reviewed SecSkills marketplace package without executing its content', async () => {
     const dataDir = await makeDataRoot()
     await cp(
       join(process.cwd(), 'data', 'marketplace'),
@@ -1292,11 +1328,18 @@ describe('marketplaceService', () => {
     )
 
     const catalog = await getMarketplaceCatalog()
-    expect(catalog.resources.map(resource => resource.id)).toContain('mcp.security-httpx')
-    expect(catalog.resources.map(resource => resource.id)).toContain('skill.secskills-index')
-    expect(catalog.resources.map(resource => resource.id)).toContain('tool.security-cli-adapter')
+    expect(catalog.resources).toHaveLength(1)
+    expect(catalog.resources[0]).toMatchObject({
+      id: 'skill.secskills',
+      publisher: 'Arenbai',
+      sourceRepository: 'https://github.com/Arenbai/SecSkills',
+      sourceCommit: 'c3e010852992149181d4c45eeb33506a9e040829',
+      license: 'MIT',
+      riskLevel: 'high',
+      requiresExplicitAuthorization: true,
+    })
 
-    const preview = await getMarketplaceInstallPreview('mcp.security-httpx')
+    const preview = await getMarketplaceInstallPreview('skill.secskills')
     expect(preview).toMatchObject({
       operation: 'install',
       verification: {
@@ -1304,47 +1347,17 @@ describe('marketplaceService', () => {
         signature: 'missing',
       },
     })
-    expect(preview.writes).toContain('mcp.json')
-    expect(preview.mcpServers).toEqual([{
-      name: 'security_httpx',
-      type: 'stdio',
-      command: 'python',
-      args: [
-        join(dataDir, 'marketplace', 'packages', 'mcp.security-httpx', '1.0.0', 'server.py'),
-        'httpx',
-      ],
-      envKeys: ['MIKO_MARKETPLACE_RESOURCE'],
-      url: undefined,
-    }])
+    expect(preview.permissions).toEqual(['read-files', 'network', 'external-tools', 'security-testing'])
 
-    const installedMcp = await installMarketplaceResource('mcp.security-httpx')
-    expect(installedMcp).toMatchObject({
-      id: 'mcp.security-httpx',
-      type: 'mcp',
-      mcpServers: ['security_httpx'],
-    })
-    const mcpJson = JSON.parse(await readFile(getMcpFile(), 'utf-8'))
-    expect(mcpJson.mcpServers.security_httpx.args).toEqual([
-      join(dataDir, 'marketplace', 'packages', 'mcp.security-httpx', '1.0.0', 'server.py'),
-      'httpx',
-    ])
-
-    const installedSkill = await installMarketplaceResource('skill.secskills-index')
+    const installedSkill = await installMarketplaceResource('skill.secskills')
     expect(installedSkill).toMatchObject({
-      id: 'skill.secskills-index',
+      id: 'skill.secskills',
       type: 'skill',
-      name: 'secskills-index',
+      name: 'SecSkills',
     })
     await expect(
-      readFile(join(dataDir, 'marketplace', 'packages', 'skill.secskills-index', '1.0.0', 'SKILL.md'), 'utf-8'),
-    ).resolves.toContain('DaoYiSec/SecSkills')
-
-    const toolResource = catalog.resources.find(resource => resource.id === 'tool.security-cli-adapter')
-    expect(toolResource).toMatchObject({
-      id: 'tool.security-cli-adapter',
-      type: 'tool',
-      category: 'security',
-    })
+      readFile(join(dataDir, 'marketplace', 'packages', 'skill.secskills', '1.1.0', 'SKILL.md'), 'utf-8'),
+    ).resolves.toContain('SecSkills')
   })
 
   it('refuses to update a marketplace MCP server after the user edits its config', async () => {
